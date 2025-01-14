@@ -9,8 +9,7 @@ from abstractions.inference.oai_parallel import process_api_requests_from_file, 
 import os
 from dotenv import load_dotenv
 import time
-from openai.types.chat import ChatCompletionToolParam
-from anthropic.types.beta.prompt_caching import PromptCachingBetaToolParam
+
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool,ToolChoiceToolChoiceAuto
 from sqlalchemy import Engine
 from sqlmodel import Session

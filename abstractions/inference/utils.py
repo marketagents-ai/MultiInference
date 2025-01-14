@@ -2,9 +2,9 @@ import os
 from openai.types.chat import ChatCompletionMessageParam
 
 from anthropic.types import MessageParam
-from anthropic.types.beta.prompt_caching.prompt_caching_beta_cache_control_ephemeral_param import PromptCachingBetaCacheControlEphemeralParam
-from anthropic.types.beta.prompt_caching.prompt_caching_beta_text_block_param import PromptCachingBetaTextBlockParam
-from anthropic.types.beta.prompt_caching.prompt_caching_beta_message_param import PromptCachingBetaMessageParam
+from anthropic.types import CacheControlEphemeralParam
+from anthropic.types import TextBlockParam
+from anthropic.types import MessageParam
 from openai.types.chat import (
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
@@ -83,17 +83,17 @@ def msg_dict_to_oai(messages: List[Dict[str, Any]]) -> List[ChatCompletionMessag
 
         return [convert_message(msg) for msg in messages]
 
-def msg_dict_to_anthropic(messages: List[Dict[str, Any]],use_cache:bool=True,use_prefill:bool=False) -> Tuple[List[PromptCachingBetaTextBlockParam],List[MessageParam]]:
-        def create_anthropic_system_message(system_message: Optional[Dict[str, Any]],use_cache:bool=True) -> List[PromptCachingBetaTextBlockParam]:
+def msg_dict_to_anthropic(messages: List[Dict[str, Any]],use_cache:bool=True,use_prefill:bool=False) -> Tuple[List[TextBlockParam],List[MessageParam]]:
+        def create_anthropic_system_message(system_message: Optional[Dict[str, Any]],use_cache:bool=True) -> List[TextBlockParam]:
             if system_message and system_message["role"] == "system":
                 text = system_message["content"]
                 if use_cache:
-                    return [PromptCachingBetaTextBlockParam(type="text", text=text, cache_control=PromptCachingBetaCacheControlEphemeralParam(type="ephemeral"))]
+                    return [TextBlockParam(type="text", text=text, cache_control=CacheControlEphemeralParam(type="ephemeral"))]
                 else:
-                    return [PromptCachingBetaTextBlockParam(type="text", text=text)]
+                    return [TextBlockParam(type="text", text=text)]
             return []
 
-        def convert_message(msg: Dict[str, Any],use_cache:bool=False) -> Union[PromptCachingBetaMessageParam, None]:
+        def convert_message(msg: Dict[str, Any],use_cache:bool=False) -> Union[MessageParam, None]:
             role = msg["role"]
             content = msg["content"]
             if role == "system":
@@ -101,24 +101,24 @@ def msg_dict_to_anthropic(messages: List[Dict[str, Any]],use_cache:bool=True,use
             
             if isinstance(content, str):
                 if not use_cache:
-                    content = [PromptCachingBetaTextBlockParam(type="text", text=content)]
+                    content = [TextBlockParam(type="text", text=content)]
                 else:
-                    content = [PromptCachingBetaTextBlockParam(type="text", text=content,cache_control=PromptCachingBetaCacheControlEphemeralParam(type='ephemeral'))]
+                    content = [TextBlockParam(type="text", text=content,cache_control=CacheControlEphemeralParam(type='ephemeral'))]
             elif isinstance(content, list):
                 if not use_cache:
                     content = [
-                        PromptCachingBetaTextBlockParam(type="text", text=block) if isinstance(block, str)
-                        else PromptCachingBetaTextBlockParam(type="text", text=block["text"]) for block in content
+                        TextBlockParam(type="text", text=block) if isinstance(block, str)
+                        else TextBlockParam(type="text", text=block["text"]) for block in content
                     ]
                 else:
                     content = [
-                        PromptCachingBetaTextBlockParam(type="text", text=block, cache_control=PromptCachingBetaCacheControlEphemeralParam(type='ephemeral')) if isinstance(block, str)
-                        else PromptCachingBetaTextBlockParam(type="text", text=block["text"], cache_control=PromptCachingBetaCacheControlEphemeralParam(type='ephemeral')) for block in content
+                        TextBlockParam(type="text", text=block, cache_control=CacheControlEphemeralParam(type='ephemeral')) if isinstance(block, str)
+                        else TextBlockParam(type="text", text=block["text"], cache_control=CacheControlEphemeralParam(type='ephemeral')) for block in content
                     ]
             else:
                 raise ValueError("Invalid content type")
             
-            return PromptCachingBetaMessageParam(role=role, content=content)
+            return MessageParam(role=role, content=content)
         converted_messages = []
         system_message = []
         num_messages = len(messages)

@@ -17,11 +17,17 @@ from openai.types.chat.completion_create_params import (
 from openai.types.shared_params.response_format_json_schema import ResponseFormatJSONSchema
 
 
-from anthropic.types.beta.prompt_caching import (
-    PromptCachingBetaToolParam,
-    PromptCachingBetaMessageParam,
-    PromptCachingBetaTextBlockParam,
-    message_create_params
+from anthropic.types import (
+    MessageParam,
+    TextBlock,
+    ToolUseBlock,
+    ToolParam,
+    TextBlockParam,
+    MessageCreateParams,
+    Message as AnthropicMessage,
+    ToolChoiceParam,
+
+    
 )
 from anthropic.types.model_param import ModelParam
 
@@ -52,17 +58,17 @@ class OpenAIRequest(BaseModel):
 
 class AnthropicRequest(BaseModel):
     max_tokens: int
-    messages: List[PromptCachingBetaMessageParam]
+    messages: List[MessageParam]
     model: ModelParam
-    metadata: message_create_params.Metadata | None = Field(default=None)
-    stop_sequences: List[str] | None = Field(default=None)
-    stream: bool | None = Field(default=None)
-    system: Union[str, List[PromptCachingBetaTextBlockParam]] | None = Field(default=None)
-    temperature: float | None = Field(default=None)
-    tool_choice: message_create_params.ToolChoice | None = Field(default=None)
-    tools: List[PromptCachingBetaToolParam] | None = Field(default=None)
-    top_k: int | None = Field(default=None)
-    top_p: float | None = Field(default=None)
+    metadata: Optional[Dict] = Field(default=None)
+    stop_sequences: Optional[List[str]] = Field(default=None)
+    stream: Optional[bool] = Field(default=None)
+    system: Optional[Union[str, List[TextBlockParam]]] = Field(default=None)
+    temperature: Optional[float] = Field(default=None)
+    tool_choice: Optional[ToolChoiceParam] = Field(default=None)
+    tools: Optional[List[ToolParam]] = Field(default=None)
+    top_k: Optional[int] = Field(default=None)
+    top_p: Optional[float] = Field(default=None)
 
 class VLLMConfig(BaseModel):
     echo: bool = Field(

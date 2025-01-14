@@ -29,16 +29,11 @@ from anthropic.types import (
     TextBlock,
     ToolUseBlock,
     ToolParam,
+    TextBlockParam,
     Message as AnthropicMessage
 )
-from anthropic.types.beta.prompt_caching import (
-    PromptCachingBetaMessage,
-    PromptCachingBetaToolParam,
-    PromptCachingBetaMessageParam,
-    PromptCachingBetaTextBlockParam,
-    message_create_params
-)
-from anthropic.types.beta.prompt_caching.prompt_caching_beta_cache_control_ephemeral_param import PromptCachingBetaCacheControlEphemeralParam
+
+from anthropic.types import CacheControlEphemeralParam
 from anthropic.types.model_param import ModelParam
 from abstractions.inference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 import uuid
@@ -301,13 +296,13 @@ class Tool(SQLModel, table=True):
             )
         return None
 
-    def get_anthropic_tool(self) -> Optional[PromptCachingBetaToolParam]:
+    def get_anthropic_tool(self) -> Optional[ToolParam]:
         if self.json_schema:
-            return PromptCachingBetaToolParam(
+            return ToolParam(
                 name=self.schema_name,
                 description=self.schema_description,
                 input_schema=self.json_schema,
-                cache_control=PromptCachingBetaCacheControlEphemeralParam(type='ephemeral')
+                cache_control=CacheControlEphemeralParam(type='ephemeral')
             )
         return None
 
@@ -655,7 +650,7 @@ class ChatThread (SQLModel, table=True):
     
     @computed_field
     @property
-    def anthropic_messages(self) -> Tuple[List[PromptCachingBetaTextBlockParam],List[MessageParam]]:
+    def anthropic_messages(self) -> Tuple[List[TextBlockParam],List[MessageParam]]:
         return msg_dict_to_anthropic(self.messages, use_cache=self.llm_config.use_cache)
     
     @computed_field
@@ -750,7 +745,7 @@ class ChatThread (SQLModel, table=True):
         user_message = self.add_user_message()
         self.add_assistant_response(llm_output, user_message.uuid)
 
-    def get_structured_output_as_tool(self) -> Union[ChatCompletionToolParam, PromptCachingBetaToolParam, None]:
+    def get_structured_output_as_tool(self) -> Union[ChatCompletionToolParam, ToolParam, None]:
         if not self.structured_output:
             return None
         if self.llm_config.client in [LLMClient.openai,LLMClient.vllm,LLMClient.litellm]:
@@ -760,7 +755,7 @@ class ChatThread (SQLModel, table=True):
         else:
             return None
     
-    def get_tools(self) -> Optional[List[Union[ChatCompletionToolParam, PromptCachingBetaToolParam]]]:
+    def get_tools(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
         if len(self.tools) == 0:
             return None
         else:
@@ -833,7 +828,7 @@ class GeneratedJsonObject(SQLModel, table=True):
 
 class RawOutput(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    raw_result: Union[str, dict, ChatCompletion, AnthropicMessage, PromptCachingBetaMessage] = Field(sa_column=Column(JSON))
+    raw_result: Union[str, dict, ChatCompletion, AnthropicMessage, AnthropicMessage] = Field(sa_column=Column(JSON))
     completion_kwargs: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     chat_thread_id: Optional[int] = Field(default=None, foreign_key="chatthread.id")
     start_time: float
@@ -891,7 +886,7 @@ class RawOutput(SQLModel, table=True):
                 return LLMClient.anthropic
             except ValidationError:
                 try:
-                    antrhopic_beta_completion = PromptCachingBetaMessage.model_validate(self.raw_result)
+                    antrhopic_beta_completion = AnthropicMessage.model_validate(self.raw_result)
                     return LLMClient.anthropic
                 except ValidationError:
                     return None
@@ -938,7 +933,7 @@ class RawOutput(SQLModel, table=True):
 
         return content, json_object, usage, None
 
-    def _parse_anthropic_message(self, message: Union[AnthropicMessage, PromptCachingBetaMessage]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage],None]:
+    def _parse_anthropic_message(self, message: Union[AnthropicMessage, AnthropicMessage]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage],None]:
         content = None
         json_object = None
         usage = None
@@ -976,7 +971,7 @@ class RawOutput(SQLModel, table=True):
             return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
         elif provider == "anthropic":
             try: #beta first
-                return self._parse_anthropic_message(PromptCachingBetaMessage.model_validate(self.raw_result))
+                return self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
             except ValidationError:
                 return self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
         elif provider == "vllm":
