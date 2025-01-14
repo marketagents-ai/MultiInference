@@ -8,8 +8,8 @@ from app.core.config import settings
 from app.db.session import engine
 from sqlmodel import SQLModel, Session, select
 from typing import Union
-from abstractions.inference.sql_models import Tool, CallableRegistry
-from abstractions.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
+from minference.core.sql_models import Tool, CallableRegistry
+from minference.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
 import logging
 
 # Configure logging

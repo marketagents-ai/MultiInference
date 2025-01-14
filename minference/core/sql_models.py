@@ -35,7 +35,7 @@ from anthropic.types import (
 
 from anthropic.types import CacheControlEphemeralParam
 from anthropic.types.model_param import ModelParam
-from abstractions.inference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
+from minference.core.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 import uuid
 from uuid import UUID
 
@@ -173,7 +173,7 @@ class Tool(SQLModel, table=True):
         if self.callable and self.callable_function:
             try:
                 # First try to get the function from DEFAULT_CALLABLE_TOOLS
-                from abstractions.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
+                from minference.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
                 if self.schema_name in DEFAULT_CALLABLE_TOOLS:
                     func = DEFAULT_CALLABLE_TOOLS[self.schema_name]["function"]
                     try:

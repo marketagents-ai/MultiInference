@@ -15,4 +15,9 @@ backoff
 aiohttp
 tiktoken
 setuptools
-
+pytest
+pytest-asyncio
+pytest-cov
+pytest-benchmark
+aiohttp
+polars

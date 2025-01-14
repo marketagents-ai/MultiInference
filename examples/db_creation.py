@@ -1,4 +1,4 @@
-from abstractions.inference.sql_models import ProcessedOutput, Usage, GeneratedJsonObject, RawOutput, ChatThread, LLMClient, ResponseFormat, LLMConfig, Tool, ChatMessage, SQLModel
+from minference.core.sql_models import ProcessedOutput, Usage, GeneratedJsonObject, RawOutput, ChatThread, LLMClient, ResponseFormat, LLMConfig, Tool, ChatMessage, SQLModel
 from sqlmodel import Session, create_engine, select
 from sqlalchemy.engine import Engine
 
