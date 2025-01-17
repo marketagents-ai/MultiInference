@@ -2,7 +2,7 @@
 import pytest
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
-from minference.lite.registry import CallableRegistry, validate_schema_compatibility
+from minference.lite.caregistry import CallableRegistry, validate_schema_compatibility
 
 # Basic Schema Tests
 def test_basic_type_schema_derivation(registry):
@@ -75,7 +75,8 @@ def test_pydantic_input_schema(registry):
     
     schema = info.input_schema
     assert schema["properties"]["name"]["description"] == "User name"
-    assert "gt" in schema["properties"]["age"]
+    assert "exclusiveMinimum" in schema["properties"]["age"]
+    assert schema["properties"]["age"]["exclusiveMinimum"] == 0
     assert schema["properties"]["tags"]["type"] == "array"
 
 def test_pydantic_output_schema(registry):
@@ -174,7 +175,9 @@ def test_complex_nested_schema(registry):
     # Verify nested structure
     schema = info.input_schema
     assert schema["properties"]["nested"]["type"] == "array"
-    assert "value" in schema["properties"]["nested"]["items"]["properties"]
+    assert "$ref" in schema["properties"]["nested"]["items"]
+    ref_name = schema["properties"]["nested"]["items"]["$ref"].split("/")[-1]
+    assert "value" in schema["$defs"][ref_name]["properties"]
     assert schema["properties"]["metadata"]["type"] == "object"
     assert schema["properties"]["metadata"]["additionalProperties"]["type"] == "array"
 

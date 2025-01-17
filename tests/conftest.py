@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 from pydantic import BaseModel, EmailStr
 
-from minference.lite.registry import CallableRegistry  # Update with your actual import path
+from minference.lite.caregistry import CallableRegistry  # Update with your actual import path
 
 # Custom test markers
 def pytest_configure(config):

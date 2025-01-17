@@ -12,7 +12,6 @@ Main components:
 - Registration helpers: Functions for safely registering callables
 - Execution helpers: Functions for safely executing registered callables
 """
-
 from typing import Dict, Any, List, Optional, Literal, Union, Tuple, Callable, TypeAlias, Protocol, TypeVar, Awaitable, get_type_hints
 from pydantic import ValidationError, create_model, BaseModel
 import json
@@ -21,17 +20,14 @@ import sys
 import libcst as cst
 from inspect import signature, iscoroutinefunction
 from dataclasses import dataclass
-from datetime import datetime
-import logging
-from io import StringIO
 import asyncio
+
+from .base_registry import BaseRegistry
 
 # Type aliases and protocols
 JsonDict: TypeAlias = Dict[str, Any]
 SchemaType: TypeAlias = Dict[str, Any]
 RegistryType: TypeAlias = Dict[str, Callable]
-
-T = TypeVar('T')
 
 class AsyncCallable(Protocol):
     """Protocol for async callable objects"""
@@ -66,46 +62,9 @@ async def ensure_async(func: AnyCallable, *args: Any, **kwargs: Any) -> Any:
         return await func(*args, **kwargs)
     return await asyncio.to_thread(func, *args, **kwargs)
 
-class CallableRegistry:
+class CallableRegistry(BaseRegistry[Callable]):
     """Global registry for tool callables"""
-    _instance = None
-    _registry: RegistryType = {}
     
-    # Setup logging
-    _log_stream = StringIO()
-    _logger = logging.getLogger('CallableRegistry')
-    _handler = logging.StreamHandler(_log_stream)
-    _handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    ))
-    _logger.addHandler(_handler)
-    _logger.setLevel(logging.INFO)
-
-    def __new__(cls) -> 'CallableRegistry':
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._logger.info("Initializing new CallableRegistry instance")
-        return cls._instance
-
-    @classmethod
-    def get_logs(cls) -> str:
-        """Get all logs as text."""
-        return cls._log_stream.getvalue()
-    
-    @classmethod
-    def clear_logs(cls) -> None:
-        """Clear all logs."""
-        cls._log_stream.truncate(0)
-        cls._log_stream.seek(0)
-        cls._logger.info("Logs cleared")
-
-    @classmethod
-    def set_log_level(cls, level: Union[int, str]) -> None:
-        """Set the logging level."""
-        cls._logger.setLevel(level)
-        cls._logger.info(f"Log level set to {level}")
-
     @classmethod
     def register(cls, name: str, func: Callable) -> None:
         """Register a new callable with validation."""
@@ -118,6 +77,7 @@ class CallableRegistry:
         try:
             cls._validate_type_hints(name, func)
             cls._registry[name] = func
+            cls._record_timestamp(name)
             cls._logger.info(f"Successfully registered function: {name}")
         except Exception as e:
             cls._logger.error(f"Registration failed for {name}: {str(e)}")
@@ -128,10 +88,16 @@ class CallableRegistry:
         """Validate that a function has proper type hints."""
         cls._logger.debug(f"Validating type hints for function: {name}")
         
-        type_hints = get_type_hints(func)
+        try:
+            type_hints = get_type_hints(func)
+        except (NameError, TypeError) as e:
+            cls._logger.error(f"Validation failed: Function '{name}' has invalid type hints")
+            raise ValueError(f"Function '{name}' must have valid type hints") from e
+        
         if not type_hints:
             cls._logger.error(f"Validation failed: Function '{name}' has no type hints")
             raise ValueError(f"Function '{name}' must have type hints")
+        
         if 'return' not in type_hints:
             cls._logger.error(f"Validation failed: Function '{name}' has no return type hint")
             raise ValueError(f"Function '{name}' must have a return type hint")
@@ -151,6 +117,7 @@ class CallableRegistry:
             func = cls._parse_function_text(name, func_text)
             cls._validate_type_hints(name, func)
             cls._registry[name] = func
+            cls._record_timestamp(name)
             cls._logger.info(f"Successfully registered function from text: {name}")
         except Exception as e:
             cls._logger.error(f"Failed to register function from text: {str(e)}")
@@ -195,6 +162,7 @@ def {name}(x: float) -> float:
         try:
             cls._validate_type_hints(name, func)
             cls._registry[name] = func
+            cls._record_timestamp(name)
             cls._logger.info(f"Successfully updated function: {name}")
         except Exception as e:
             cls._logger.error(f"Update failed for {name}: {str(e)}")
@@ -208,6 +176,7 @@ def {name}(x: float) -> float:
             cls._logger.error(f"Deletion failed: Function '{name}' not found")
             raise ValueError(f"Function '{name}' not found in registry.")
         del cls._registry[name]
+        del cls._timestamps[name]
         cls._logger.info(f"Successfully deleted function: {name}")
     
     @classmethod
@@ -283,37 +252,8 @@ def {name}(x: float) -> float:
         except Exception as e:
             cls._logger.error(f"Async execution failed for {name}: {str(e)}")
             raise
-    
 
-# Registration helper functions
-def register_default_callable(name: str, func: Callable, registry: Optional[CallableRegistry] = None) -> None:
-    """Register a callable from default tools collection."""
-    if registry is None:
-        registry = CallableRegistry()
-    try:
-        registry.register(name, func)
-    except ValueError:
-        pass  # Already registered
-
-def register_from_text_with_validation(
-    name: str, 
-    func_text: str,
-    allow_literal_eval: bool = False,
-    registry: Optional[CallableRegistry] = None
-) -> None:
-    """Register a function from text with safety validation."""
-    if registry is None:
-        registry = CallableRegistry()
-        
-    if not allow_literal_eval:
-        raise ValueError("allow_literal_eval must be True to register from text")
-        
-    try:
-        registry.register_from_text(name=name, func_text=func_text)
-    except Exception as e:
-        raise ValueError(f"Could not register function from text: {str(e)}")
-
-# Schema helper functions
+# Helper function definitions exactly as before
 def derive_input_schema(func: Callable) -> SchemaType:
     """Derive JSON schema from function type hints."""
     type_hints = get_type_hints(func)
@@ -362,15 +302,57 @@ def validate_schema_compatibility(
     provided_schema: SchemaType
 ) -> None:
     """Validate that provided schema matches derived schema."""
-    derived_required = set(derived_schema.get("required", []))
-    provided_required = set(provided_schema.get("required", []))
-    if derived_required != provided_required:
-        raise ValueError(
-            f"Schema mismatch: Required properties don't match.\n"
-            f"Derived: {derived_required}\n"
-            f"Provided: {provided_required}"
-        )
+    def get_ref_schema(schema: SchemaType, ref: str) -> SchemaType:
+        """Resolve a $ref to its actual schema."""
+        if not ref.startswith("#/$defs/"):
+            raise ValueError(f"Invalid $ref format: {ref}")
+        model_name = ref.split("/")[-1]
+        return schema.get("$defs", {}).get(model_name, {})
 
+    def compare_props(
+        name: str,
+        derived_prop: SchemaType,
+        provided_prop: SchemaType,
+        derived_root: SchemaType,
+        provided_root: SchemaType
+    ) -> None:
+        """Compare two property schemas, handling $refs."""
+        # Resolve refs if present
+        if "$ref" in derived_prop:
+            derived_prop = get_ref_schema(derived_root, derived_prop["$ref"])
+        if "$ref" in provided_prop:
+            provided_prop = get_ref_schema(provided_root, provided_prop["$ref"])
+
+        # Handle array types
+        if derived_prop.get("type") == "array":
+            if provided_prop.get("type") != "array":
+                raise ValueError(f"Property '{name}' type mismatch: Expected array")
+                
+            derived_items = derived_prop["items"]
+            provided_items = provided_prop["items"]
+            
+            # Handle refs in array items
+            if "$ref" in derived_items:
+                derived_items = get_ref_schema(derived_root, derived_items["$ref"])
+            if "$ref" in provided_items:
+                provided_items = get_ref_schema(provided_root, provided_items["$ref"])
+                
+            if derived_items.get("type") != provided_items.get("type"):
+                raise ValueError(
+                    f"Array items type mismatch for '{name}'.\n"
+                    f"Derived: {derived_items.get('type')}\n"
+                    f"Provided: {provided_items.get('type')}"
+                )
+                
+        # Handle direct type comparison
+        elif derived_prop.get("type") != provided_prop.get("type"):
+            raise ValueError(
+                f"Property '{name}' type mismatch.\n"
+                f"Derived: {derived_prop.get('type')}\n"
+                f"Provided: {provided_prop.get('type')}"
+            )
+    
+    # First check for missing properties
     derived_props = derived_schema.get("properties", {})
     provided_props = provided_schema.get("properties", {})
     
@@ -386,10 +368,20 @@ def validate_schema_compatibility(
                 f"Provided: {provided_type}"
             )
 
+    # Then check for extra properties
     extra_props = set(provided_props.keys()) - set(derived_props.keys())
     if extra_props:
         raise ValueError(f"Extra properties in provided schema: {extra_props}")
-
+        
+    # Finally check required properties
+    derived_required = set(derived_schema.get("required", []))
+    provided_required = set(provided_schema.get("required", []))
+    if derived_required != provided_required:
+        raise ValueError(
+            f"Schema mismatch: Required properties don't match.\n"
+            f"Derived: {derived_required}\n"
+            f"Provided: {provided_required}"
+        )
 def execute_callable(
     name: str,
     input_data: JsonDict,
@@ -427,6 +419,10 @@ def execute_callable(
         
     except Exception as e:
         raise ValueError(f"Error executing {name}: {str(e)}") from e
+
+
+
+
 
 async def aexecute_callable(
     name: str,

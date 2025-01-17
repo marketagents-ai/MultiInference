@@ -1,5 +1,5 @@
 import pytest
-from minference.lite.registry import CallableRegistry  # Update with your actual import path
+from minference.lite.caregistry import CallableRegistry  # Update with your actual import path
 
 # Singleton Pattern Tests
 def test_singleton_behavior():
