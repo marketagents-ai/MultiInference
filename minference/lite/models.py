@@ -15,13 +15,17 @@ import json
 from datetime import datetime
 import inspect
 
+from openai.types.chat import ChatCompletionToolParam
+from openai.types.shared_params import FunctionDefinition
+from anthropic.types import ToolParam, CacheControlEphemeralParam
+
+from minference.lite.enregistry import EntityRegistry
 from minference.lite.caregistry import (
     CallableRegistry,
     derive_input_schema,
     derive_output_schema,
     validate_schema_compatibility,
 )
-from minference.lite.enregistry import EntityRegistry
 
 T = TypeVar('T', bound='Entity')
 
@@ -50,11 +54,6 @@ class Entity(BaseModel):
         default_factory=datetime.utcnow,
         description="Timestamp when this entity was created"
     )
-    
-    model_config = {
-        "frozen": True,  # Ensures immutability
-        "arbitrary_types_allowed": True
-    }
     
     @model_validator(mode='after')
     def register_entity(self) -> 'Entity':
@@ -245,8 +244,6 @@ class CallableTool(Entity):
     )
 
     model_config = {
-        "frozen": True,  # Ensures immutability
-        "arbitrary_types_allowed": True,
         "json_schema_extra": {
             "examples": [
                 {
@@ -402,3 +399,144 @@ class CallableTool(Entity):
         except Exception as e:
             ca_registry._logger.error(f"CallableTool({self.id}): Async execution failed for '{self.name}'")
             raise ValueError(f"Error executing {self.name} asynchronously: {str(e)}") from e
+    
+    def get_openai_tool(self) -> Optional[ChatCompletionToolParam]:
+        """Get OpenAI tool format using the callable's schema."""
+        if self.input_schema:
+            return ChatCompletionToolParam(
+                type="function",
+                function=FunctionDefinition(
+                    name=self.name,
+                    description=self.docstring or f"Execute {self.name} function",
+                    parameters=self.input_schema
+                )
+            )
+        return None
+
+    def get_anthropic_tool(self) -> Optional[ToolParam]:
+        """Get Anthropic tool format using the callable's schema."""
+        if self.input_schema:
+            return ToolParam(
+                name=self.name,
+                description=self.docstring or f"Execute {self.name} function",
+                input_schema=self.input_schema,
+                cache_control=CacheControlEphemeralParam(type='ephemeral')
+            )
+        return None
+        
+class StructuredTool(Entity):
+    """
+    Entity representing a tool for structured output with schema validation and LLM integration.
+    
+    Inherits from Entity for registry integration and automatic registration.
+    Provides schema validation and LLM format conversion for structured outputs.
+    """
+    name: str = Field(
+        default="generate_structured_output",
+        description="Name for the structured output schema"
+    )
+    
+    description: str = Field(
+        default="Generate a structured output based on the provided JSON schema.",
+        description="Description of what the structured output represents"
+    )
+    
+    instruction_string: str = Field(
+        default="Please follow this JSON schema for your response:",
+        description="Instruction to prepend to schema for LLM"
+    )
+    
+    json_schema: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON schema defining the expected structure"
+    )
+    
+    strict_schema: bool = Field(
+        default=True,
+        description="Whether to enforce strict schema validation"
+    )
+
+    def _custom_serialize(self) -> Dict[str, Any]:
+        """Serialize tool-specific data."""
+        return {
+            "json_schema": self.json_schema,
+            "description": self.description,
+            "instruction": self.instruction_string
+        }
+    
+    @classmethod
+    def _custom_deserialize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize tool-specific data."""
+        return {
+            "json_schema": data.get("json_schema", {}),
+            "description": data.get("description", ""),
+            "instruction_string": data.get("instruction", "")
+        }
+
+    @property
+    def schema_instruction(self) -> str:
+        """Get formatted schema instruction for LLM."""
+        return f"{self.instruction_string}: {self.json_schema}"
+
+    def get_openai_tool(self) -> Optional[ChatCompletionToolParam]:
+        """Get OpenAI tool format."""
+        if self.json_schema:
+            return ChatCompletionToolParam(
+                type="function",
+                function=FunctionDefinition(
+                    name=self.name,
+                    description=self.description,
+                    parameters=self.json_schema
+                )
+            )
+        return None
+
+    def get_anthropic_tool(self) -> Optional[ToolParam]:
+        """Get Anthropic tool format."""
+        if self.json_schema:
+            return ToolParam(
+                name=self.name,
+                description=self.description,
+                input_schema=self.json_schema,
+                cache_control=CacheControlEphemeralParam(type='ephemeral')
+            )
+        return None
+
+    @classmethod
+    def from_pydantic(
+        cls,
+        model: Type[BaseModel],
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        instruction_string: Optional[str] = None,
+        strict_schema: bool = True
+    ) -> 'StructuredTool':
+        """
+        Create a StructuredTool from a Pydantic model.
+        
+        Args:
+            model: Pydantic model class
+            name: Optional override for tool name (defaults to model name)
+            description: Optional override for description (defaults to model docstring)
+            instruction_string: Optional custom instruction
+            strict_schema: Whether to enforce strict schema validation
+        """
+        if not issubclass(model, BaseModel):
+            raise ValueError("Model must be a Pydantic model")
+            
+        # Get model schema
+        schema = model.model_json_schema()
+        
+        # Use model name if not provided
+        tool_name = name or model.__name__.lower()
+        
+        # Use model docstring if no description provided
+        tool_description = description or model.__doc__ or f"Generate {tool_name} structured output"
+        
+        return cls(
+            name=tool_name,
+            json_schema=schema,
+            description=tool_description,
+            instruction_string=instruction_string or cls.model_fields["instruction_string"].default,
+            strict_schema=strict_schema
+        )
