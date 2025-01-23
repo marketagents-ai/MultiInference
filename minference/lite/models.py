@@ -7,9 +7,11 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple
+from enum import Enum
+
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, computed_field
 from pathlib import Path
 import json
 from datetime import datetime
@@ -18,6 +20,7 @@ import inspect
 from openai.types.chat import ChatCompletionToolParam
 from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
+from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
 from minference.lite.enregistry import EntityRegistry
 from minference.lite.caregistry import (
@@ -26,7 +29,27 @@ from minference.lite.caregistry import (
     derive_output_schema,
     validate_schema_compatibility,
 )
+from openai.types.shared_params.response_format_json_schema import ResponseFormatJSONSchema, JSONSchema
 
+from openai.types.shared_params import (
+    ResponseFormatText,
+    ResponseFormatJSONObject,
+    FunctionDefinition
+)
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+    ChatCompletionToolChoiceOptionParam,
+    ChatCompletion
+)
+from anthropic.types import (
+    MessageParam,
+    TextBlock,
+    ToolUseBlock,
+    ToolParam,
+    TextBlockParam,
+    Message as AnthropicMessage
+)
 T = TypeVar('T', bound='Entity')
 
 class Entity(BaseModel):
@@ -540,3 +563,415 @@ class StructuredTool(Entity):
             instruction_string=instruction_string or cls.model_fields["instruction_string"].default,
             strict_schema=strict_schema
         )
+
+class LLMClient(str, Enum):
+    openai = "openai"
+    azure_openai = "azure_openai"
+    anthropic = "anthropic"
+    vllm = "vllm"
+    litellm = "litellm"
+
+class ResponseFormat(str, Enum):
+    json_beg = "json_beg"
+    text = "text"
+    json_object = "json_object"
+    structured_output = "structured_output"
+    tool = "tool"
+    auto_tools = "auto_tools"
+    workflow = "workflow"
+    
+class MessageRole(str, Enum):
+    user = "user"
+    assistant = "assistant"
+    tool = "tool"
+    system = "system"
+
+class LLMConfig(Entity):
+    """
+    Configuration entity for LLM interactions.
+    
+    Specifies the client, model, and response format settings
+    for interacting with various LLM providers.
+    """
+    client: LLMClient = Field(
+        description="The LLM client/provider to use"
+    )
+    
+    model: Optional[str] = Field(
+        default=None,
+        description="Model identifier for the LLM"
+    )
+    
+    max_tokens: int = Field(
+        default=400,
+        description="Maximum number of tokens in completion",
+        ge=1
+    )
+    
+    temperature: float = Field(
+        default=0,
+        description="Sampling temperature",
+        ge=0,
+        le=2
+    )
+    
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.text,
+        description="Format for LLM responses"
+    )
+    
+    use_cache: bool = Field(
+        default=True,
+        description="Whether to use response caching"
+    )
+
+    @model_validator(mode="after")
+    def validate_response_format(self) -> 'LLMConfig':
+        """Validate response format compatibility with selected client."""
+        if (self.response_format == ResponseFormat.json_object and 
+            self.client in [LLMClient.vllm, LLMClient.litellm, LLMClient.anthropic]):
+            raise ValueError(f"{self.client} does not support json_object response format")
+            
+        if (self.response_format == ResponseFormat.structured_output and 
+            self.client == LLMClient.anthropic):
+            raise ValueError(
+                f"Anthropic does not support structured_output response format. "
+                "Use json_beg or tool instead"
+            )
+            
+        return self
+
+
+ToolType = Literal["Callable", "Structured"]
+
+class ChatMessage(Entity):
+    """A chat message entity using chatml format."""
+    
+    timestamp: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When the message was created"
+    )
+    
+    role: MessageRole = Field(
+        description="Role of the message sender" 
+    )
+    
+    content: str = Field(
+        description="The message content"
+    )
+
+    author_uuid: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the author of the message"
+    )
+
+    chat_thread_uuid: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the chat thread this message belongs to"
+    )
+    
+    parent_message_uuid: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the parent message in the conversation"
+    )
+    
+    tool_name: Optional[str] = Field(
+        default=None, 
+        description="Name of the tool if this is a tool-related message"
+    )
+
+    tool_uuid: Optional[UUID] = Field(
+        default=None,
+        description="UUID of the tool in our EntityRegistry"
+    )
+
+    tool_type: Optional[ToolType] = Field(
+        default=None,
+        description="Type of tool - either Callable or Structured"
+    )
+    
+    oai_tool_call_id: Optional[str] = Field(
+        default=None,
+        description="OAI tool call id"
+    )
+    
+    tool_json_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="JSON schema for tool input/output"
+    )
+    
+    tool_call: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Tool call details and arguments"
+    )
+
+    @property
+    @computed_field
+    def is_root(self) -> bool:
+        """Check if this is a root message (no parent)."""
+        return self.parent_message_uuid is None
+
+    def get_parent(self) -> Optional['ChatMessage']:
+        """Get the parent message if it exists."""
+        if self.parent_message_uuid:
+            return ChatMessage.get(self.parent_message_uuid)
+        return None
+
+    def get_tool(self) -> Optional[Union['CallableTool', 'StructuredTool']]:
+        """Get the associated tool from the registry if it exists."""
+        if not self.tool_uuid:
+            return None
+        
+        if self.tool_type == "Callable":
+            return CallableTool.get(self.tool_uuid)
+        elif self.tool_type == "Structured":
+            return StructuredTool.get(self.tool_uuid)
+        return None
+    
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to chatml format dictionary."""
+        if self.role == MessageRole.tool:
+            return {
+                "role": self.role.value,
+                "content": self.content,
+                "tool_call_id": self.oai_tool_call_id
+            }
+        elif self.role == MessageRole.assistant and self.oai_tool_call_id is not None:
+            return {
+                "role": self.role.value,
+                "content": self.content,
+                "tool_calls": [{
+                    "id": self.oai_tool_call_id,
+                    "function": {
+                        "arguments": json.dumps(self.tool_call),
+                        "name": self.tool_name
+                    },
+                    "type": "function"
+                }]
+            }
+        else:
+            return {
+                "role": self.role.value,
+                "content": self.content
+            }
+
+    @classmethod
+    def from_dict(cls, message_dict: Dict[str, Any]) -> 'ChatMessage':
+        """Create a ChatMessage from a chatml format dictionary."""
+        return cls(
+            role=MessageRole(message_dict["role"]),
+            content=message_dict["content"]
+        )
+
+class SystemPrompt(Entity):
+    """Entity representing a reusable system prompt."""
+    
+    name: str = Field(
+        description="Identifier name for the system prompt"
+    )
+    
+    content: str = Field(
+        description="The system prompt text content"
+    )
+
+class Thread(Entity):
+    """A chat thread entity managing conversation flow and message history."""
+    
+    name: Optional[str] = Field(
+        default=None,
+        description="Optional name for the thread"
+    )
+    
+    system_prompt: Optional[SystemPrompt] = Field(
+        default=None,
+        description="Associated system prompt"
+    )
+    
+    history: List[ChatMessage] = Field(
+        default_factory=list,
+        description="Messages in chronological order"
+    )
+    
+    new_message: Optional[str] = Field(
+        default=None,
+        description="Temporary storage for message being processed"
+    )
+    
+    prefill: str = Field(
+        default="Here's the valid JSON object response:```json",
+        description="Prefill assistant response with an instruction"
+    )
+    
+    postfill: str = Field(
+        default="\n\nPlease provide your response in JSON format.",
+        description="Postfill user response with an instruction"
+    )
+    
+    use_schema_instruction: bool = Field(
+        default=False,
+        description="Whether to use the schema instruction"
+    )
+    
+    use_history: bool = Field(
+        default=True,
+        description="Whether to use the history"
+    )
+    
+    structured_output: Optional[StructuredTool] = Field(
+        default=None,
+        description="Associated structured output tool"
+    )
+    
+    llm_config: LLMConfig = Field(
+        description="LLM configuration"
+    )
+    
+    tools: List[Union[CallableTool, StructuredTool]] = Field(
+        default_factory=list,
+        description="Available tools"
+    )
+
+    @property
+    def oai_response_format(self) -> Optional[Union[ResponseFormatText, ResponseFormatJSONObject, ResponseFormatJSONSchema]]:
+        """Get OpenAI response format based on config."""
+        if self.llm_config.response_format == ResponseFormat.text:
+            return ResponseFormatText(type="text")
+        elif self.llm_config.response_format == ResponseFormat.json_object:
+            return ResponseFormatJSONObject(type="json_object")
+        elif self.llm_config.response_format == ResponseFormat.structured_output:
+            assert self.structured_output is not None, "Structured output is not set"
+            return self.structured_output.get_openai_json_schema_response()
+        return None
+
+    @property
+    def use_prefill(self) -> bool:
+        """Check if prefill should be used."""
+        return (self.llm_config.client in [LLMClient.anthropic, LLMClient.vllm, LLMClient.litellm] and 
+                self.llm_config.response_format == ResponseFormat.json_beg)
+
+    @property
+    def use_postfill(self) -> bool:
+        """Check if postfill should be used."""
+        return (self.llm_config.client == LLMClient.openai and 
+                self.llm_config.response_format in [ResponseFormat.json_object, ResponseFormat.json_beg] and 
+                not self.use_schema_instruction)
+
+    @property
+    def system_message(self) -> Optional[Dict[str, str]]:
+        """Get system message including schema instruction if needed."""
+        content = self.system_prompt.content if self.system_prompt else ""
+        if self.use_schema_instruction and self.structured_output:
+            content = "\n".join([content, self.structured_output.schema_instruction])
+        return {"role": "system", "content": content} if content else None
+
+    @property
+    def message_objects(self) -> List[ChatMessage]:
+        """Get all message objects in the conversation."""
+        messages = []
+        
+        # Add system message
+        if self.system_message:
+            messages.append(ChatMessage(
+                role=MessageRole.system,
+                content=self.system_message["content"]
+            ))
+            
+        # Add history
+        if self.use_history:
+            messages.extend(self.history)
+            
+        # Add new message
+        if self.new_message:
+            messages.append(ChatMessage(
+                role=MessageRole.user,
+                content=self.new_message
+            ))
+            
+        # Handle prefill/postfill
+        if self.use_prefill and messages:
+            messages.append(ChatMessage(
+                role=MessageRole.assistant,
+                content=self.prefill
+            ))
+        elif self.use_postfill and messages:
+            messages[-1].content += self.postfill
+            
+        return messages
+
+    @property
+    def messages(self) -> List[Dict[str, Any]]:
+        """Get messages in chatml dict format."""
+        return [msg.to_dict() for msg in self.message_objects]
+
+    @property
+    def oai_messages(self) -> List[ChatCompletionMessageParam]:
+        """Get messages in OpenAI format."""
+        return msg_dict_to_oai(self.messages)
+
+    @property
+    def anthropic_messages(self) -> Tuple[List[TextBlockParam], List[MessageParam]]:
+        """Get messages in Anthropic format."""
+        return msg_dict_to_anthropic(self.messages, use_cache=self.llm_config.use_cache)
+
+    @property
+    def vllm_messages(self) -> List[ChatCompletionMessageParam]:
+        """Get messages in vLLM format."""
+        return msg_dict_to_oai(self.messages)
+
+    def get_tool_by_name(self, tool_name: str) -> Optional[Union[CallableTool, StructuredTool]]:
+        """Get tool by name from available tools."""
+        for tool in self.tools:
+            if tool.name == tool_name:
+                return tool
+        if self.structured_output and self.structured_output.name == tool_name:
+            return self.structured_output
+        return None
+
+    def add_user_message(self) -> ChatMessage:
+        """Add current new_message as user message."""
+        if self.new_message is None:
+            raise ValueError("new_message is None, cannot add to history")
+
+        last_message = self.history[-1] if self.history else None
+        user_message = ChatMessage(
+            role=MessageRole.user,
+            content=self.new_message,
+            parent_message_uuid=last_message.id if last_message else None
+        )
+        self.history.append(user_message)
+        self.new_message = None
+        return user_message
+
+    def add_assistant_response(self, content: str, tool_name: Optional[str] = None,
+                             tool_call: Optional[Dict[str, Any]] = None,
+                             parent_message_uuid: Optional[UUID] = None) -> ChatMessage:
+        """Add assistant response to history."""
+        message = ChatMessage(
+            role=MessageRole.assistant,
+            content=content,
+            parent_message_uuid=parent_message_uuid,
+            tool_name=tool_name
+        )
+        if tool_call:
+            message.tool_call = tool_call
+            if tool := self.get_tool_by_name(tool_name):
+                message.tool_uuid = tool.id
+                message.tool_json_schema = tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema
+                message.tool_type = "Callable" if isinstance(tool, CallableTool) else "Structured"
+
+        self.history.append(message)
+        return message
+
+    def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
+        """Get tools in format appropriate for current LLM."""
+        if not self.tools:
+            return None
+            
+        tools = []
+        for tool in self.tools:
+            if self.llm_config.client in [LLMClient.openai, LLMClient.vllm, LLMClient.litellm]:
+                tools.append(tool.get_openai_tool())
+            elif self.llm_config.client == LLMClient.anthropic:
+                tools.append(tool.get_anthropic_tool())
+        return tools if tools else None
