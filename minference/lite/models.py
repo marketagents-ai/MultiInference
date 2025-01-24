@@ -775,7 +775,7 @@ class SystemPrompt(Entity):
         description="The system prompt text content"
     )
 
-class Thread(Entity):
+class ChatThread(Entity):
     """A chat thread entity managing conversation flow and message history."""
     
     name: Optional[str] = Field(
@@ -928,15 +928,16 @@ class Thread(Entity):
             return self.structured_output
         return None
 
-    def add_user_message(self) -> ChatMessage:
+    def add_user_message(self, new_message: Optional[str] = None) -> ChatMessage:
         """Add current new_message as user message."""
-        if self.new_message is None:
-            raise ValueError("new_message is None, cannot add to history")
-
+        if self.new_message is None and new_message is None:
+            raise ValueError("both self.new_message and new_message are None, cannot add to history")
+        if new_message is None:
+            new_message = self.new_message
         last_message = self.history[-1] if self.history else None
         user_message = ChatMessage(
             role=MessageRole.user,
-            content=self.new_message,
+            content=new_message,
             parent_message_uuid=last_message.id if last_message else None
         )
         self.history.append(user_message)
