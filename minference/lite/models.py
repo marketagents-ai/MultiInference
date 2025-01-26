@@ -7,7 +7,7 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self
 from enum import Enum
 
 from uuid import UUID, uuid4
@@ -16,7 +16,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 import inspect
-
+from jsonschema import validate
 from openai.types.chat import ChatCompletionToolParam
 from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
@@ -79,9 +79,9 @@ class Entity(BaseModel):
     )
     
     @model_validator(mode='after')
-    def register_entity(self) -> 'Entity':
+    def register_entity(self) -> Self:
         """Register this entity instance in the registry."""
-        registry = EntityRegistry()
+        registry = EntityRegistry
         registry._logger.debug(f"{self.__class__.__name__}({self.id}): Registering entity")
         
         try:
@@ -131,7 +131,7 @@ class Entity(BaseModel):
         Raises:
             IOError: If saving fails
         """
-        registry = EntityRegistry()
+        registry = EntityRegistry
         registry._logger.debug(f"{self.__class__.__name__}({self.id}): Saving to {path}")
         
         try:
@@ -180,7 +180,7 @@ class Entity(BaseModel):
             IOError: If loading fails
             ValueError: If data validation fails
         """
-        registry = EntityRegistry()
+        registry = EntityRegistry
         registry._logger.debug(f"{cls.__name__}: Loading from {path}")
         
         try:
@@ -212,17 +212,17 @@ class Entity(BaseModel):
     @classmethod
     def get(cls: Type[T], entity_id: UUID) -> Optional[T]:
         """Get an entity instance from the registry."""
-        return EntityRegistry().get(entity_id, expected_type=cls)
+        return EntityRegistry.get(entity_id, expected_type=cls)
         
     @classmethod
     def list_all(cls: Type[T]) -> List[T]:
         """List all entities of this type."""
-        return EntityRegistry().list_by_type(cls)
+        return EntityRegistry.list_by_type(cls)
         
     @classmethod
     def get_many(cls: Type[T], entity_ids: List[UUID]) -> List[T]:
         """Get multiple entities by their IDs."""
-        return EntityRegistry().get_many(entity_ids, expected_type=cls)
+        return EntityRegistry.get_many(entity_ids, expected_type=cls)
 
 
 class CallableTool(Entity):
@@ -279,20 +279,15 @@ class CallableTool(Entity):
     }
     
     @model_validator(mode='after')
-    def validate_schemas_and_callable(self) -> 'CallableTool':
+    def validate_schemas_and_callable(self) -> Self:
         """
         Validates the tool's schemas and ensures its callable is registered.
-        
-        This validator:
-        1. Checks/registers the callable in CallableRegistry
-        2. Extracts callable text if not provided
-        3. Derives and validates input/output schemas
         """
-        ca_registry = CallableRegistry()
+        ca_registry = CallableRegistry
         ca_registry._logger.debug(f"CallableTool({self.id}): Validating function '{self.name}'")
         
         func = ca_registry.get(self.name)
-        if not func:
+        if func is None:
             if not self.callable_text:
                 ca_registry._logger.error(f"CallableTool({self.id}): No callable or text provided for '{self.name}'")
                 raise ValueError(f"No callable found in registry for '{self.name}' and no callable_text provided")
@@ -300,20 +295,22 @@ class CallableTool(Entity):
             try:
                 ca_registry.register_from_text(self.name, self.callable_text)
                 func = ca_registry.get(self.name)
+                if func is None:
+                    raise ValueError("Failed to register callable")
             except Exception as e:
                 ca_registry._logger.error(f"CallableTool({self.id}): Function registration failed for '{self.name}'")
                 raise ValueError(f"Failed to register callable: {str(e)}")
-                
+        
         # Store text representation if not provided
         if not self.callable_text:
             try:
-                self.callable_text = inspect.getsource(func)
+                self.callable_text = inspect.getsource(func)  # Now func is guaranteed to be callable
             except (TypeError, OSError):
                 self.callable_text = str(func)
         
         # Derive and validate schemas
-        derived_input = derive_input_schema(func)
-        derived_output = derive_output_schema(func)
+        derived_input = derive_input_schema(func)  # Now func is guaranteed to be callable
+        derived_output = derive_output_schema(func)  # Now func is guaranteed to be callable
         
         # Validate against provided schemas if they exist
         if self.input_schema:
@@ -376,7 +373,7 @@ class CallableTool(Entity):
     @classmethod
     def from_registry(cls, name: str) -> 'CallableTool':
         """Creates a new tool from an existing registry entry."""
-        ca_registry = CallableRegistry()
+        ca_registry = CallableRegistry
         if not ca_registry.get(name):
             raise ValueError(f"No callable found in registry with name: {name}")
             
@@ -385,7 +382,7 @@ class CallableTool(Entity):
     
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the callable with the given input data."""
-        ca_registry = CallableRegistry()
+        ca_registry = CallableRegistry
         ca_registry._logger.debug(f"CallableTool({self.id}): Executing '{self.name}'")
         
         try:
@@ -412,7 +409,7 @@ class CallableTool(Entity):
         Raises:
             ValueError: If execution fails
         """
-        ca_registry = CallableRegistry()
+        ca_registry = CallableRegistry
         ca_registry._logger.debug(f"CallableTool({self.id}): Executing '{self.name}' asynchronously")
         
         try:
@@ -479,6 +476,19 @@ class StructuredTool(Entity):
         description="Whether to enforce strict schema validation"
     )
 
+    def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Pseudo-execute for structured output validation.
+        Returns the input data if it matches the schema.
+        """
+        try:
+            # Validate input against schema
+            
+            validate(instance=input_data, schema=self.json_schema)
+            return input_data
+        except Exception as e:
+            raise ValueError(f"Input data does not match schema: {str(e)}")
+
     def _custom_serialize(self) -> Dict[str, Any]:
         """Serialize tool-specific data."""
         return {
@@ -523,6 +533,18 @@ class StructuredTool(Entity):
                 input_schema=self.json_schema,
                 cache_control=CacheControlEphemeralParam(type='ephemeral')
             )
+        return None
+
+    def get_openai_json_schema_response(self) -> Optional[ResponseFormatJSONSchema]:
+        """Get OpenAI JSON schema response format."""
+        if self.json_schema:
+            schema = JSONSchema(
+                name=self.name,
+                description=self.description,
+                schema=self.json_schema,
+                strict=self.strict_schema
+            )
+            return ResponseFormatJSONSchema(type="json_schema", json_schema=schema)
         return None
 
     @classmethod
@@ -626,7 +648,7 @@ class LLMConfig(Entity):
     )
 
     @model_validator(mode="after")
-    def validate_response_format(self) -> 'LLMConfig':
+    def validate_response_format(self) -> Self:
         """Validate response format compatibility with selected client."""
         if (self.response_format == ResponseFormat.json_object and 
             self.client in [LLMClient.vllm, LLMClient.litellm, LLMClient.anthropic]):
@@ -775,6 +797,240 @@ class SystemPrompt(Entity):
         description="The system prompt text content"
     )
 
+
+
+class Usage(Entity):
+    """Tracks token usage for LLM interactions."""
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cache_creation_input_tokens: Optional[int] = None
+    cache_read_input_tokens: Optional[int] = None
+
+class GeneratedJsonObject(Entity):
+    """Represents a structured JSON object generated by an LLM."""
+    name: str
+    object: Dict[str, Any]
+    tool_call_id: Optional[str] = None
+
+class RawOutput(Entity):
+    """
+    Raw output from LLM interactions before processing.
+    Handles different LLM provider formats and parsing.
+    """
+    raw_result: Union[str, dict, ChatCompletion, AnthropicMessage]
+    completion_kwargs: Optional[Dict[str, Any]] = None
+    chat_thread_id: UUID
+    start_time: float
+    end_time: float
+    client: LLMClient
+
+    @property
+    def time_taken(self) -> float:
+        """Calculate time taken for the LLM call."""
+        return self.end_time - self.start_time
+
+    @computed_field
+    @property
+    def str_content(self) -> Optional[str]:
+        """Extract string content from raw result."""
+        return self._parse_result()[0]
+
+    @computed_field
+    @property
+    def json_object(self) -> Optional[GeneratedJsonObject]:
+        """Extract JSON object from raw result."""
+        return self._parse_result()[1]
+    
+    @computed_field
+    @property
+    def error(self) -> Optional[str]:
+        """Extract error message if present."""
+        return self._parse_result()[3]
+
+    @computed_field
+    @property
+    def contains_object(self) -> bool:
+        """Check if result contains a JSON object."""
+        return self._parse_result()[1] is not None
+    
+    @computed_field
+    @property
+    def usage(self) -> Optional[Usage]:
+        """Extract usage statistics."""
+        return self._parse_result()[2]
+
+    @computed_field
+    @property
+    def result_provider(self) -> Optional[LLMClient]:
+        """Determine the LLM provider from the result format."""
+        return self.search_result_provider() if self.client is None else self.client
+    
+    def search_result_provider(self) -> Optional[LLMClient]:
+        """Identify LLM provider from result structure."""
+        try:
+            ChatCompletion.model_validate(self.raw_result)
+            return LLMClient.openai
+        except:
+            try:
+                AnthropicMessage.model_validate(self.raw_result)
+                return LLMClient.anthropic
+            except:
+                return None
+
+    def _parse_json_string(self, content: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON string safely."""
+        try:
+            # Try direct JSON parsing first
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # Fall back to more lenient parsing if needed
+            import re
+            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(1))
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+    def _parse_oai_completion(self, chat_completion: ChatCompletion) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
+        """Parse OpenAI completion format."""
+        message = chat_completion.choices[0].message
+        content = message.content
+
+        json_object = None
+        usage = None
+
+        # Handle tool calls
+        if message.tool_calls:
+            tool_call = message.tool_calls[0]
+            name = tool_call.function.name
+            tool_call_id = tool_call.id
+            try:
+                object_dict = json.loads(tool_call.function.arguments)
+                json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
+            except json.JSONDecodeError:
+                json_object = GeneratedJsonObject(name=name, object={"raw": tool_call.function.arguments}, tool_call_id=tool_call_id)
+        
+        # Handle content parsing
+        elif content is not None:
+            if self.completion_kwargs:
+                name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
+            else:
+                name = None
+            parsed_json = self._parse_json_string(content)
+            if parsed_json:
+                json_object = GeneratedJsonObject(
+                    name="parsed_content" if name is None else name,
+                    object=parsed_json
+                )
+                content = None
+
+        # Extract usage information
+        if chat_completion.usage:
+            usage = Usage(
+                prompt_tokens=chat_completion.usage.prompt_tokens,
+                completion_tokens=chat_completion.usage.completion_tokens,
+                total_tokens=chat_completion.usage.total_tokens
+            )
+
+        return content, json_object, usage, None
+
+    def _parse_anthropic_message(self, message: AnthropicMessage) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
+        """Parse Anthropic message format."""
+        content = None
+        json_object = None
+        usage = None
+
+        if message.content:
+            first_content = message.content[0]
+            # Check if it's a TextBlock
+            if isinstance(first_content, TextBlock):
+                content = first_content.text
+                parsed_json = self._parse_json_string(content)
+                if parsed_json:
+                    json_object = GeneratedJsonObject(
+                        name="parsed_content", 
+                        object=parsed_json
+                    )
+                    content = None
+            # Check if it's a ToolUseBlock
+            elif isinstance(first_content, ToolUseBlock):
+                tool_use = first_content
+                # Cast tool_use.input to Dict[str, Any]
+                if isinstance(tool_use.input, dict):
+                    json_object = GeneratedJsonObject(
+                        name=tool_use.name,
+                        object=tool_use.input
+                    )
+                else:
+                    # Handle non-dict input by wrapping it
+                    json_object = GeneratedJsonObject(
+                        name=tool_use.name,
+                        object={"value": tool_use.input}
+                    )
+
+        if hasattr(message, 'usage'):
+            usage = Usage(
+                prompt_tokens=message.usage.input_tokens,
+                completion_tokens=message.usage.output_tokens,
+                total_tokens=message.usage.input_tokens + message.usage.output_tokens,
+                cache_creation_input_tokens=getattr(message.usage, 'cache_creation_input_tokens', None),
+                cache_read_input_tokens=getattr(message.usage, 'cache_read_input_tokens', None)
+            )
+
+        return content, json_object, usage, None
+
+    def _parse_result(self) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
+        """Parse raw result into structured components."""
+        # Check for errors first
+        if getattr(self.raw_result, "error", None):
+            return None, None, None, getattr(self.raw_result, "error", None)
+
+        provider = self.result_provider
+        if provider == LLMClient.openai:
+            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+        elif provider == LLMClient.anthropic:
+            return self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
+        elif provider == LLMClient.vllm:
+            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+        elif provider == LLMClient.litellm:
+            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+        else:
+            raise ValueError(f"Unsupported result provider: {provider}")
+
+    def create_processed_output(self) -> 'ProcessedOutput':
+        """Create a ProcessedOutput from this raw output."""
+        content, json_object, usage, error = self._parse_result()
+        if (json_object is None and content is None) or self.chat_thread_id is None:
+            raise ValueError("No content or JSON object found in raw output")
+   
+        return ProcessedOutput(
+            content=content,
+            json_object=json_object,
+            usage=usage,
+            error=error,
+            time_taken=self.time_taken,
+            llm_client=self.client,
+            raw_output=self,
+            chat_thread_id=self.chat_thread_id
+        )
+
+class ProcessedOutput(Entity):
+    """
+    Processed and structured output from LLM interactions.
+    Contains parsed content, JSON objects, and usage statistics.
+    """
+    content: Optional[str] = None
+    json_object: Optional[GeneratedJsonObject] = None
+    usage: Optional[Usage] = None
+    error: Optional[str] = None
+    time_taken: float
+    llm_client: LLMClient
+    raw_output: RawOutput
+    chat_thread_id: UUID
+    
 class ChatThread(Entity):
     """A chat thread entity managing conversation flow and message history."""
     
@@ -932,35 +1188,154 @@ class ChatThread(Entity):
         """Add current new_message as user message."""
         if self.new_message is None and new_message is None:
             raise ValueError("both self.new_message and new_message are None, cannot add to history")
-        if new_message is None:
-            new_message = self.new_message
+            
+        # Get the message content, ensuring it's not None
+        message_content = new_message if new_message is not None else self.new_message
+        if message_content is None:
+            raise ValueError("message content is None")
+            
         last_message = self.history[-1] if self.history else None
         user_message = ChatMessage(
             role=MessageRole.user,
-            content=new_message,
+            content=message_content,  # Now we're sure this is str, not Optional[str]
             parent_message_uuid=last_message.id if last_message else None
         )
         self.history.append(user_message)
         self.new_message = None
         return user_message
 
-    def add_assistant_response(self, content: str, tool_name: Optional[str] = None,
-                             tool_call: Optional[Dict[str, Any]] = None,
-                             parent_message_uuid: Optional[UUID] = None) -> ChatMessage:
-        """Add assistant response to history."""
+    def get_last_message_uuid(self) -> Optional[UUID]:
+        """Get UUID of the last message in history."""
+        if not self.history:
+            return None
+        return self.history[-1].id
+
+
+    def add_assistant_response(self, llm_output: ProcessedOutput, user_message_uuid: UUID) -> ChatMessage:
+        """
+        Add the assistant's response from ProcessedOutput to history.
+        
+        Args:
+            llm_output: Processed LLM output
+            user_message_uuid: UUID of the user message this responds to
+            
+        Returns:
+            The created assistant message
+            
+        Raises:
+            ValueError: If output validation fails
+        """
+        if llm_output.chat_thread_id != self.id:
+            raise ValueError(
+                f"ProcessedOutput chat_thread_id {llm_output.chat_thread_id} "
+                f"does not match chat thread id {self.id}"
+            )
+
+        json_object = llm_output.json_object
+        str_content = llm_output.content
+
+        # Handle text-only response
+        if not json_object:
+            if not str_content:
+                raise ValueError("ProcessedOutput has no content or JSON object")
+            return self.add_assistant_message(str_content, user_message_uuid)
+
+        # Handle tool/structured responses
+        tool_name = json_object.name
+        tool = self.get_tool_by_name(tool_name)
+        
+        if not tool:
+            raise ValueError(f"Tool {tool_name} not found")
+
+        if self.llm_config.response_format in [ResponseFormat.auto_tools, ResponseFormat.tool]:
+            message = ChatMessage(
+                role=MessageRole.assistant,
+                content=str_content or "",
+                parent_message_uuid=user_message_uuid,
+                tool_name=tool_name,
+                tool_uuid=tool.id,
+                tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
+                oai_tool_call_id=json_object.tool_call_id,
+                tool_json_schema=tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema,
+                tool_call=json_object.object
+            )
+        else:
+            message = ChatMessage(
+                role=MessageRole.assistant,
+                content=json.dumps(json_object.object),
+                parent_message_uuid=user_message_uuid,
+                tool_name=tool_name,
+                tool_uuid=tool.id,
+                tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
+                tool_json_schema=tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema
+            )
+
+        self.history.append(message)
+        return message
+
+    def add_assistant_and_tool_execution_response(self, llm_output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
+        """
+        Add assistant response and execute tool if applicable.
+        
+        Args:
+            llm_output: Processed LLM output
+            
+        Returns:
+            Tuple of (assistant message, tool response message)
+            
+        Raises:
+            ValueError: If tool execution fails
+        """
+        user_message_uuid = self.get_last_message_uuid()
+        if not user_message_uuid:
+            raise ValueError("No user message found to respond to")
+            
+        if not llm_output.json_object:
+            raise ValueError("No JSON object in output for tool execution")
+
+        # Add assistant response
+        assistant_message = self.add_assistant_response(llm_output, user_message_uuid)
+
+        # Execute tool
+        tool = self.get_tool_by_name(llm_output.json_object.name)
+        if not tool:
+            raise ValueError(f"Tool {llm_output.json_object.name} not found")
+
+        # Create tool response message
+        tool_response = ChatMessage(
+            role=MessageRole.tool,
+            content=json.dumps(tool.execute(llm_output.json_object.object)),
+            parent_message_uuid=assistant_message.id,
+            tool_name=tool.name,
+            tool_uuid=tool.id,
+            tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
+            oai_tool_call_id=llm_output.json_object.tool_call_id
+        )
+        
+        self.history.append(tool_response)
+        return assistant_message, tool_response
+
+    def add_chat_turn_history(self, llm_output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
+        """
+        Add a complete chat turn (user message + assistant response) to history.
+        
+        Args:
+            llm_output: Processed LLM output
+            
+        Returns:
+            Tuple of (user message, assistant message)
+        """
+        user_message = self.add_user_message()
+        assistant_message = self.add_assistant_response(llm_output, user_message.id)
+        return user_message, assistant_message
+
+    def add_assistant_message(self, content: str, parent_uuid: UUID) -> ChatMessage:
+        """Helper method to add a simple assistant message."""
         message = ChatMessage(
             role=MessageRole.assistant,
             content=content,
-            parent_message_uuid=parent_message_uuid,
-            tool_name=tool_name
+            parent_message_uuid=parent_uuid
         )
-        if tool_call:
-            message.tool_call = tool_call
-            if tool := self.get_tool_by_name(tool_name):
-                message.tool_uuid = tool.id
-                message.tool_json_schema = tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema
-                message.tool_type = "Callable" if isinstance(tool, CallableTool) else "Structured"
-
         self.history.append(message)
         return message
 

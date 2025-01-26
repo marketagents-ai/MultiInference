@@ -11,17 +11,21 @@ Main components:
 - Entity Type Validation: Runtime type checking for entity instances
 - Entity Lineage Tracking: Functions for tracking entity versions
 """
-from typing import Dict, Any, Optional, Type, TypeVar, List, Generic
+from typing import Dict, Any, Optional, Type, TypeVar, List, Generic, Protocol, runtime_checkable
 from pydantic import BaseModel
 from uuid import UUID
 import json
 from datetime import datetime
 
-from .base_registry import BaseRegistry
+from minference.lite.base_registry import BaseRegistry
 
-EntityType = TypeVar('EntityType', bound=BaseModel)
+@runtime_checkable
+class HasID(Protocol):
+    id: UUID
 
-class EntityRegistry(BaseRegistry[BaseModel], Generic[EntityType]):
+EntityType = TypeVar('EntityType', bound='HasID')
+
+class EntityRegistry(BaseRegistry[EntityType]):
     """
     Registry for managing immutable Pydantic model instances.
     
@@ -32,6 +36,9 @@ class EntityRegistry(BaseRegistry[BaseModel], Generic[EntityType]):
     Type Args:
         EntityType: Type of Pydantic models to store
     """
+    _registry: Dict[UUID, EntityType] = {}
+    _timestamps: Dict[UUID, datetime] = {}
+
     @classmethod
     def register(cls, entity: EntityType) -> None:
         """
@@ -50,7 +57,7 @@ class EntityRegistry(BaseRegistry[BaseModel], Generic[EntityType]):
             cls._logger.error("Invalid entity type")
             raise ValueError("Entity must be a Pydantic model instance")
             
-        if not hasattr(entity, 'id'):
+        if not isinstance(entity, HasID):
             cls._logger.error("Entity missing ID field")
             raise ValueError("Entity must have an 'id' field")
             
@@ -68,7 +75,7 @@ class EntityRegistry(BaseRegistry[BaseModel], Generic[EntityType]):
             # Validate but don't modify
             _ = entity.model_dump()
             cls._registry[entity_id] = entity
-            cls._record_timestamp(entity_id)
+            cls._timestamps[entity_id] = datetime.utcnow()
             cls._logger.info(f"Successfully registered immutable entity {entity_id}")
         except Exception as e:
             cls._logger.error(f"Failed to register entity {entity_id}: {str(e)}")

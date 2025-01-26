@@ -3,13 +3,13 @@ import asyncio
 import json
 from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field, ValidationError
-from minference.lite.models import RawOutput, ProcessedOutput, ChatThread , LLMClient , ResponseFormat
+from minference.lite.models import RawOutput, ProcessedOutput, ChatThread , LLMClient , ResponseFormat, CallableTool, StructuredTool
 from minference.clients_models import AnthropicRequest, OpenAIRequest, VLLMRequest
 from minference.lite.oai_parallel import process_api_requests_from_file, OAIApiFromFileConfig
 import os
 from dotenv import load_dotenv
 import time
-
+from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool,ToolChoiceToolChoiceAuto
 
 
@@ -52,7 +52,7 @@ class InferenceOrchestrator:
         os.makedirs(full_path, exist_ok=True)
         return full_path
     
-    def _create_chat_thread_hashmap(self, chat_threads: List[ChatThread]) -> Dict[int, ChatThread]:
+    def _create_chat_thread_hashmap(self, chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
         return {p.id: p for p in chat_threads if p.id is not None}
     
     def _update_chat_thread_history(self, chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ChatThread]:
@@ -66,68 +66,41 @@ class InferenceOrchestrator:
     
 
     async def run_parallel_ai_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
-        if not self.engine:
-            raise ValueError("Engine is not set, cannot update DB")
-        print("Updating DB with user messages")
+        print("Running parallel AI completion")
         
-        # Open a new session if none is provided
-        
-       
-        openai_chat_threads = [p for p in chat_threads if p.llm_config.client == "openai"]
-        anthropic_chat_threads = [p for p in chat_threads if p.llm_config.client == "anthropic"]
-        vllm_chat_threads = [p for p in chat_threads if p.llm_config.client == "vllm"] 
-        litellm_chat_threads = [p for p in chat_threads if p.llm_config.client == "litellm"]
-        tasks  = []
-        if openai_chat_threads:
-            tasks.append(self._run_openai_completion(openai_chat_threads))
-        if anthropic_chat_threads:
-            tasks.append(self._run_anthropic_completion(anthropic_chat_threads))
-        if vllm_chat_threads:
-            tasks.append(self._run_vllm_completion(vllm_chat_threads))
-        if litellm_chat_threads:
-            tasks.append(self._run_litellm_completion(litellm_chat_threads))
+        tasks = []
+        if any(p for p in chat_threads if p.llm_config.client == "openai"):
+            tasks.append(self._run_openai_completion([p for p in chat_threads if p.llm_config.client == "openai"]))
+        if any(p for p in chat_threads if p.llm_config.client == "anthropic"):
+            tasks.append(self._run_anthropic_completion([p for p in chat_threads if p.llm_config.client == "anthropic"]))
+        if any(p for p in chat_threads if p.llm_config.client == "vllm"):
+            tasks.append(self._run_vllm_completion([p for p in chat_threads if p.llm_config.client == "vllm"]))
+        if any(p for p in chat_threads if p.llm_config.client == "litellm"):
+            tasks.append(self._run_litellm_completion([p for p in chat_threads if p.llm_config.client == "litellm"]))
 
         results = await asyncio.gather(*tasks)
         flattened_results = [item for sublist in results for item in sublist]
         
-        # Track  requests
+        # Track requests
         self.all_requests.extend(flattened_results)
         
- 
-
-            
-        # Update the history for each chat thread directly
+        # Update the history for each chat thread
         for output in flattened_results:
-            # Retrieve the corresponding ChatThread instance by ID in this session
             chat_thread = ChatThread.get(output.chat_thread_id)
-            
             if chat_thread:
-                # Initialize history if it doesn't exist
-                last_message_uuid= chat_thread.get_last_message_uuid() 
-                if last_message_uuid:
-                    chat_thread.add_assistant_response(output, last_message_uuid)
-                else:
-                    raise ValueError(f"Chat thread {chat_thread.id} has no user message uuid")
-                assistant_message_uuid = chat_thread.get_last_message_uuid()
+                # Add user message and get assistant response
+                user_message = chat_thread.add_user_message()
+                
                 if output.json_object:
-                    tool = chat_thread.get_tool_by_name(output.json_object.name)
-                    if tool and tool.callable:
-                        print(f"Executing tool: {tool.schema_name} with request_id: {output.json_object.tool_call_id}")
-                        # try:
-                        tool_response = tool.execute(input=output.json_object.object, tool_call_id=output.json_object.tool_call_id, tool_call_message_uuid=assistant_message_uuid)
-                        chat_thread.history.append(tool_response)
-                        print(f"Tool response: {tool_response}")
-                        # except Exception as e:
-                        #     error_dict = {"results": {"error": str(e)}}
-                        #     error_tool_response = ChatMessage(role=MessageRole.tool, content=json.dumps(error_dict))
-                        #     chat_thread.history.append(error_tool_response)
-                        #     print(f"Tool response: {error_tool_response}")
-                
+                    # For tool responses (both Callable and Structured), use add_assistant_and_tool_execution_response
+                    assistant_message, tool_response = chat_thread.add_assistant_and_tool_execution_response(output)
+                    print(f"Added tool response for {output.json_object.name}")
+                else:
+                    # For regular responses, just add the assistant response
+                    assistant_message = chat_thread.add_assistant_response(output, user_message.id)
+                    print(f"Added regular assistant response")
 
-                
-                # Print updated length of the history
-                print(f"The length of the history for chat_thread_id: {chat_thread.id} is {len(chat_thread.history)}")
-    
+                print(f"Updated history length for chat_thread_id {chat_thread.id}: {len(chat_thread.history)}")
 
         return flattened_results
         
@@ -253,14 +226,14 @@ class InferenceOrchestrator:
         if chat_thread.oai_response_format:
             request["response_format"] = chat_thread.oai_response_format
         if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.get_structured_output_as_tool()
+            tool = chat_thread.structured_output
             if tool:
-                request["tools"] = [tool]
-                request["tool_choice"] = {"type": "function", "function": {"name": chat_thread.structured_output.schema_name}}
+                request["tools"] = [tool.get_openai_tool()]
+                request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
         elif chat_thread.llm_config.response_format == "auto_tools":
-            tools = chat_thread.get_tools()
+            tools = chat_thread.tools
             if tools:
-                request["tools"] = tools
+                request["tools"] = [t.get_openai_tool() for t in tools]
                 request["tool_choice"] = "auto"
         if self._validate_openai_request(request):
             return request
@@ -277,14 +250,14 @@ class InferenceOrchestrator:
             "system": system_content if system_content else None
         }
         if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.get_structured_output_as_tool()
+            tool = chat_thread.structured_output
             if tool:
-                request["tools"] = [tool]
-                request["tool_choice"] = ToolChoiceToolChoiceTool(name=chat_thread.structured_output.schema_name, type="tool")
+                request["tools"] = [tool.get_anthropic_tool()]
+                request["tool_choice"] = ToolChoiceToolChoiceTool(name=tool.name, type="tool")
         elif chat_thread.llm_config.response_format == "auto_tools":
-            tools = chat_thread.get_tools()
+            tools = chat_thread.tools
             if tools:
-                request["tools"] = tools
+                request["tools"] = [t.get_anthropic_tool() for t in tools]
                 request["tool_choice"] = ToolChoiceToolChoiceAuto(type="auto")
 
         if self._validate_anthropic_request(request):
@@ -293,7 +266,7 @@ class InferenceOrchestrator:
             return None
         
     def _get_vllm_request(self, chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
-        messages = chat_thread.vllm_messages  # Use vllm_messages instead of oai_messages
+        messages = chat_thread.vllm_messages
         request = {
             "model": chat_thread.llm_config.model,
             "messages": messages,
@@ -301,10 +274,10 @@ class InferenceOrchestrator:
             "temperature": chat_thread.llm_config.temperature,
         }
         if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.get_structured_output_as_tool()
+            tool = chat_thread.structured_output
             if tool:
-                request["tools"] = [tool]
-                request["tool_choice"] = {"type": "function", "function": {"name": chat_thread.structured_output.schema_name}}
+                request["tools"] = [tool.get_openai_tool()]
+                request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
         if chat_thread.llm_config.response_format == "json_object":
             raise ValueError("VLLM does not support json_object response format otherwise infinite whitespaces are returned")
         if chat_thread.oai_response_format and chat_thread.oai_response_format:

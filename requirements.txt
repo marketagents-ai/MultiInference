@@ -21,3 +21,4 @@ pytest-cov
 pytest-benchmark
 aiohttp
 polars
+jsonschema

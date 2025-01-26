@@ -64,6 +64,8 @@ async def ensure_async(func: AnyCallable, *args: Any, **kwargs: Any) -> Any:
 
 class CallableRegistry(BaseRegistry[Callable]):
     """Global registry for tool callables"""
+    _registry: Dict[str, Callable] = {}  # Add explicit type annotation
+    _timestamps: Dict[str, float] = {}   # Add explicit type annotation
     
     @classmethod
     def register(cls, name: str, func: Callable) -> None:
@@ -234,7 +236,7 @@ def {name}(x: float) -> float:
         """
         cls._logger.info(f"Attempting sync execution of function: {name}")
         try:
-            result = execute_callable(name, input_data, registry=cls())
+            result = execute_callable(name, input_data, registry=cls)
             cls._logger.info(f"Successfully executed {name} synchronously")
             return result
         except Exception as e:
@@ -246,7 +248,7 @@ def {name}(x: float) -> float:
         """Execute a registered callable asynchronously."""
         cls._logger.info(f"Attempting async execution of function: {name}")
         try:
-            result = await aexecute_callable(name, input_data, registry=cls())
+            result = await aexecute_callable(name, input_data, registry=cls)
             cls._logger.info(f"Successfully executed {name} asynchronously")
             return result
         except Exception as e:
@@ -385,11 +387,14 @@ def validate_schema_compatibility(
 def execute_callable(
     name: str,
     input_data: JsonDict,
-    registry: Optional[CallableRegistry] = None
+    registry: Optional[type[CallableRegistry]] = None
 ) -> JsonDict:
     """Execute a registered callable with input data."""
     if registry is None:
-        registry = CallableRegistry()
+        registry = CallableRegistry
+    
+    # Add type assertion to help type checker
+    assert isinstance(registry, type)
         
     callable_func = registry.get(name)
     if not callable_func:
@@ -427,7 +432,7 @@ def execute_callable(
 async def aexecute_callable(
     name: str,
     input_data: JsonDict,
-    registry: Optional[CallableRegistry] = None
+    registry: Optional[type[CallableRegistry]] = None
 ) -> JsonDict:
     """
     Execute a registered callable asynchronously with input data.
@@ -445,7 +450,10 @@ async def aexecute_callable(
         ValueError: If function not found or execution fails
     """
     if registry is None:
-        registry = CallableRegistry()
+        registry = CallableRegistry
+    
+    # Add type assertion to help type checker
+    assert isinstance(registry, type)
         
     callable_func = registry.get(name)
     if not callable_func:
@@ -498,8 +506,7 @@ __all__ = [
     'AsyncCallable',
     'SyncCallable',
     'AnyCallable',
-    'register_default_callable',
-    'register_from_text_with_validation',
+
     'derive_input_schema',
     'derive_output_schema',
     'validate_schema_compatibility',
