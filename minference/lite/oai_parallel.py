@@ -468,7 +468,7 @@ def num_tokens_consumed_from_request(
                 for key, value in message.items():
                     if key == "tool_calls":
                         value = json.dumps(value)
-                    print(f"key: {key}, value: {value}")
+                    # print(f"key: {key}, value: {value}")
                     num_tokens += len(encoding.encode(value, disallowed_special=()))
                     if key == "name":  # if there's a name, the role is omitted
                         num_tokens -= 1  # role is always required and always 1 token

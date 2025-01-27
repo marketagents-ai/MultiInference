@@ -44,6 +44,7 @@ class InferenceOrchestrator:
                  local_cache: bool = True,
                  cache_folder: Optional[str] = None):
         load_dotenv()
+        EntityRegistry._logger.info("Initializing InferenceOrchestrator")
         self.openai_key = os.getenv("OPENAI_KEY")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         self.vllm_key = os.getenv("VLLM_API_KEY")
@@ -76,16 +77,17 @@ class InferenceOrchestrator:
         self.local_cache = local_cache
         self.cache_folder = self._setup_cache_folder(cache_folder)
         self.all_requests = []
+        EntityRegistry._logger.info("InferenceOrchestrator initialized")
 
     def _setup_cache_folder(self, cache_folder: Optional[str]) -> str:
         if cache_folder:
             full_path = os.path.abspath(cache_folder)
         else:
-            # Go up two levels from the current file's directory to reach the project root
             repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
             full_path = os.path.join(repo_root, 'outputs', 'inference_cache')
         
         os.makedirs(full_path, exist_ok=True)
+        EntityRegistry._logger.debug(f"Cache folder set up at: {full_path}")
         return full_path
     
     def _create_chat_thread_hashmap(self, chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
@@ -156,7 +158,7 @@ class InferenceOrchestrator:
             except Exception as e:
                 if chat.llm_config.response_format != ResponseFormat.auto_tools:
                     chat_threads.remove(chat)
-                    EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.id}): {e}, removed from thread list")
+                    EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.id}): {e}")
 
         # Run LLM completions in parallel
         tasks = []
@@ -172,8 +174,7 @@ class InferenceOrchestrator:
         results = await asyncio.gather(*tasks)
         llm_outputs = [item for sublist in results for item in sublist]
         
-        # Process LLM outputs and execute tools in parallel
-        EntityRegistry._logger.info(f"Processing LLM outputs and executing tools")
+        EntityRegistry._logger.info(f"Processing {len(llm_outputs)} LLM outputs")
         processed_outputs = await self._process_outputs_and_execute_tools(chat_threads, llm_outputs)
         
         return processed_outputs
@@ -283,6 +284,7 @@ class InferenceOrchestrator:
 
     def _prepare_requests_file(self, chat_threads: List[ChatThread], client: str, filename: str):
         requests = []
+        EntityRegistry._logger.info(f"Preparing {client} requests for {len(chat_threads)} chat threads")
         for chat_thread in chat_threads:
             request = self._convert_chat_thread_to_request(chat_thread, client)
             if request:
@@ -298,12 +300,14 @@ class InferenceOrchestrator:
             for request in requests:
                 json.dump(request, f)
                 f.write('\n')
+        EntityRegistry._logger.debug(f"Wrote {len(requests)} requests to {filename}")
 
     def _validate_anthropic_request(self, request: Dict[str, Any]) -> bool:
         try:
             anthropic_request = AnthropicRequest(**request)
             return True
         except Exception as e:
+            EntityRegistry._logger.error(f"Error validating Anthropic request: {e}")
             raise ValidationError(f"Error validating Anthropic request: {e} with request: {request}")
     
     def _validate_openai_request(self, request: Dict[str, Any]) -> bool:
@@ -311,7 +315,7 @@ class InferenceOrchestrator:
             openai_request = OpenAIRequest(**request)
             return True
         except Exception as e:
-            print(f"Error validating OpenAI request: {e} with request: {request}")
+            EntityRegistry._logger.error(f"Error validating OpenAI request: {e}")
             raise ValidationError(f"Error validating OpenAI request: {e} with request: {request}")
         
     def _validate_vllm_request(self, request: Dict[str, Any]) -> bool:
@@ -319,7 +323,7 @@ class InferenceOrchestrator:
             vllm_request = VLLMRequest(**request)
             return True
         except Exception as e:
-            # Instead of raising ValidationError, we'll return False
+            EntityRegistry._logger.error(f"Error validating VLLM request: {e}")
             raise ValidationError(f"Error validating VLLM request: {e} with request: {request}")
         
 
@@ -478,6 +482,7 @@ class InferenceOrchestrator:
 
     def _parse_results_file(self, filepath: str, client: LLMClient) -> List[ProcessedOutput]:
         results = []
+        EntityRegistry._logger.debug(f"Parsing results from {filepath}")
         with open(filepath, 'r') as f:
             for line in f:
                 try:
@@ -485,9 +490,10 @@ class InferenceOrchestrator:
                     processed_output = self._convert_result_to_llm_output(result, client)
                     results.append(processed_output)
                 except json.JSONDecodeError:
-                    print(f"Error decoding JSON: {line}")
+                    EntityRegistry._logger.error(f"Error decoding JSON: {line}")
                 except Exception as e:
-                    print(f"Error processing result: {e}")
+                    EntityRegistry._logger.error(f"Error processing result: {e}")
+        EntityRegistry._logger.info(f"Processed {len(results)} results from {filepath}")
         return results
 
     def _convert_result_to_llm_output(self, result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
@@ -510,5 +516,6 @@ class InferenceOrchestrator:
         for file in files:
             try:
                 os.remove(file)
+                EntityRegistry._logger.debug(f"Deleted file: {file}")
             except OSError as e:
-                print(f"Error deleting file {file}: {e}")
+                EntityRegistry._logger.error(f"Error deleting file {file}: {e}")

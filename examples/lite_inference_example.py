@@ -72,10 +72,8 @@ async def main():
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
     for chat in openai_chats:
-        print("latest_message:",chat.new_message)
-        print("history:",chat.history)
+
         chat.new_message = "And why is it funny?"
-        print("latest_message:",chat.new_message)
     second_step_completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
     end_time = time.time()
     total_time = end_time - start_time
