@@ -78,6 +78,13 @@ class Entity(BaseModel):
         description="Timestamp when this entity was created"
     )
     
+    class Config:
+        # Add JSON encoders for UUID and datetime
+        json_encoders = {
+            UUID: str,  # Convert UUID to string
+            datetime: lambda v: v.isoformat()  # Convert datetime to ISO format string
+        }
+    
     @model_validator(mode='after')
     def register_entity(self) -> Self:
         """Register this entity instance in the registry."""
@@ -815,15 +822,15 @@ class GeneratedJsonObject(Entity):
 
 class RawOutput(Entity):
     """
-    Raw output from LLM interactions before processing.
-    Handles different LLM provider formats and parsing.
+    Raw output from LLM API calls with metadata.
     """
-    raw_result: Union[str, dict, ChatCompletion, AnthropicMessage]
-    completion_kwargs: Optional[Dict[str, Any]] = None
-    chat_thread_id: UUID
+    raw_result: Dict[str, Any]
+    completion_kwargs: Dict[str, Any]
     start_time: float
     end_time: float
+    chat_thread_id: Optional[UUID] = None
     client: LLMClient
+    _parsed_result: Optional[Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]] = None
 
     @property
     def time_taken(self) -> float:
@@ -844,6 +851,12 @@ class RawOutput(Entity):
     
     @computed_field
     @property
+    def usage(self) -> Optional[Usage]:
+        """Extract usage statistics."""
+        return self._parse_result()[2]
+
+    @computed_field
+    @property
     def error(self) -> Optional[str]:
         """Extract error message if present."""
         return self._parse_result()[3]
@@ -853,12 +866,31 @@ class RawOutput(Entity):
     def contains_object(self) -> bool:
         """Check if result contains a JSON object."""
         return self._parse_result()[1] is not None
-    
-    @computed_field
-    @property
-    def usage(self) -> Optional[Usage]:
-        """Extract usage statistics."""
-        return self._parse_result()[2]
+
+    def _parse_result(self) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
+        """Parse raw result into structured components with caching."""
+        if self._parsed_result is not None:
+            return self._parsed_result
+            
+        # Check for errors first
+        if getattr(self.raw_result, "error", None):
+            self._parsed_result = (None, None, None, getattr(self.raw_result, "error", None))
+            return self._parsed_result
+
+        provider = self.result_provider
+        try:
+            if provider == LLMClient.openai:
+                self._parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+            elif provider == LLMClient.anthropic:
+                self._parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
+            elif provider in [LLMClient.vllm, LLMClient.litellm]:
+                self._parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+            else:
+                raise ValueError(f"Unsupported result provider: {provider}")
+        except Exception as e:
+            self._parsed_result = (None, None, None, str(e))
+            
+        return self._parsed_result
 
     @computed_field
     @property
@@ -982,23 +1014,6 @@ class RawOutput(Entity):
 
         return content, json_object, usage, None
 
-    def _parse_result(self) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
-        """Parse raw result into structured components."""
-        # Check for errors first
-        if getattr(self.raw_result, "error", None):
-            return None, None, None, getattr(self.raw_result, "error", None)
-
-        provider = self.result_provider
-        if provider == LLMClient.openai:
-            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
-        elif provider == LLMClient.anthropic:
-            return self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
-        elif provider == LLMClient.vllm:
-            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
-        elif provider == LLMClient.litellm:
-            return self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
-        else:
-            raise ValueError(f"Unsupported result provider: {provider}")
 
     def create_processed_output(self) -> 'ProcessedOutput':
         """Create a ProcessedOutput from this raw output."""
@@ -1016,7 +1031,7 @@ class RawOutput(Entity):
             raw_output=self,
             chat_thread_id=self.chat_thread_id
         )
-
+    
 class ProcessedOutput(Entity):
     """
     Processed and structured output from LLM interactions.

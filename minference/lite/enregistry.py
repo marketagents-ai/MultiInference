@@ -42,44 +42,77 @@ class EntityRegistry(BaseRegistry[EntityType]):
     @classmethod
     def register(cls, entity: EntityType) -> None:
         """
-        Register a new entity instance.
-        
-        The entity is treated as immutable once registered. Any modifications
-        should create new instances with new UUIDs.
+        Register a new entity instance or verify reference to existing entity.
         
         Args:
             entity: Pydantic model instance to register
             
         Raises:
-            ValueError: If entity validation fails or UUID conflict exists
+            ValueError: If entity validation fails or if existing entity doesn't match
         """
         if not isinstance(entity, BaseModel):
-            cls._logger.error("Invalid entity type")
+            cls._logger.error(f"Invalid entity type: {type(entity)}")
             raise ValueError("Entity must be a Pydantic model instance")
             
         if not isinstance(entity, HasID):
-            cls._logger.error("Entity missing ID field")
+            cls._logger.error(f"Entity missing ID field: {type(entity)}")
             raise ValueError("Entity must have an 'id' field")
             
         entity_id = entity.id
-        cls._logger.info(f"Attempting to register entity {entity_id}")
+        cls._logger.debug(f"Attempting to register {entity.__class__.__name__}({entity_id})")
         
+        # If entity already exists, verify it's the same
         if entity_id in cls._registry:
-            cls._logger.error(f"Entity {entity_id} already registered")
-            raise ValueError(
-                f"Entity with id {entity_id} already exists. "
-                "Create a new instance with a new UUID for modifications."
-            )
+            existing_entity = cls._registry[entity_id]
+            # Compare entity types
+            if type(existing_entity) != type(entity):
+                cls._logger.error(
+                    f"Type mismatch for {entity_id}:\n"
+                    f"Existing: {type(existing_entity)}\n"
+                    f"New: {type(entity)}"
+                )
+                raise ValueError(f"Entity type mismatch for {entity_id}")
+            
+            # Compare entity contents (excluding id and created_at)
+            new_dict = entity.model_dump(exclude={'id', 'created_at'})
+            existing_dict = existing_entity.model_dump(exclude={'id', 'created_at'})
+            
+            if new_dict != existing_dict:
+                # Find and log the differences
+                diffs = []
+                for key in set(new_dict.keys()) | set(existing_dict.keys()):
+                    if key not in new_dict:
+                        diffs.append(f"Key '{key}' missing in new entity")
+                    elif key not in existing_dict:
+                        diffs.append(f"Key '{key}' missing in existing entity")
+                    elif new_dict[key] != existing_dict[key]:
+                        diffs.append(
+                            f"Value mismatch for '{key}':\n"
+                            f"  Existing: {existing_dict[key]}\n"
+                            f"  New: {new_dict[key]}"
+                        )
+                
+                cls._logger.error(
+                    f"Content mismatch for {entity.__class__.__name__}({entity_id}):\n"
+                    f"Differences:\n" + "\n".join(diffs)
+                )
+                raise ValueError(
+                    f"Entity content mismatch for {entity_id}. "
+                    "Create a new instance with a new UUID for modifications."
+                )
+                
+            # Entity exists and matches
+            cls._logger.debug(f"{entity.__class__.__name__}({entity_id}) already registered and matches")
+            return
             
         try:
-            # Validate but don't modify
-            _ = entity.model_dump()
+            # Register new entity
             cls._registry[entity_id] = entity
             cls._timestamps[entity_id] = datetime.utcnow()
-            cls._logger.info(f"Successfully registered immutable entity {entity_id}")
+            cls._logger.info(f"Successfully registered {entity.__class__.__name__}({entity_id})")
         except Exception as e:
-            cls._logger.error(f"Failed to register entity {entity_id}: {str(e)}")
-            raise ValueError(f"Entity validation failed: {str(e)}") from e
+            cls._logger.error(f"Failed to register {entity.__class__.__name__}({entity_id}): {str(e)}")
+            raise ValueError(f"Entity registration failed: {str(e)}") from e
 
     @classmethod
     def get(

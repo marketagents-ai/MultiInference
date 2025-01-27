@@ -11,12 +11,26 @@ from dotenv import load_dotenv
 import time
 from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool,ToolChoiceToolChoiceAuto
+from minference.lite.models import Entity
 
 
-class RequestLimits(BaseModel):
-    max_requests_per_minute: int = Field(default=50,description="The maximum number of requests per minute for the API")
-    max_tokens_per_minute: int = Field(default=100000,description="The maximum number of tokens per minute for the API")
-    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(default="openai",description="The provider of the API")
+class RequestLimits(Entity):
+    """
+    Configuration for API request limits.
+    Inherits from Entity for UUID handling and registry integration.
+    """
+    max_requests_per_minute: int = Field(
+        default=50,
+        description="The maximum number of requests per minute for the API"
+    )
+    max_tokens_per_minute: int = Field(
+        default=100000,
+        description="The maximum number of tokens per minute for the API"
+    )
+    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(
+        default="openai",
+        description="The provider of the API"
+    )
 
 
 class InferenceOrchestrator:
@@ -33,10 +47,29 @@ class InferenceOrchestrator:
         self.vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.litellm_endpoint = os.getenv("LITELLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.litellm_key = os.getenv("LITELLM_API_KEY")
-        self.oai_request_limits = oai_request_limits if oai_request_limits else RequestLimits(max_requests_per_minute=500,max_tokens_per_minute=200000,provider="openai")
-        self.anthropic_request_limits = anthropic_request_limits if anthropic_request_limits else RequestLimits(max_requests_per_minute=50,max_tokens_per_minute=40000,provider="anthropic")
-        self.vllm_request_limits = vllm_request_limits if vllm_request_limits else RequestLimits(max_requests_per_minute=500,max_tokens_per_minute=200000,provider="vllm")
-        self.litellm_request_limits = litellm_request_limits if litellm_request_limits else RequestLimits(max_requests_per_minute=500,max_tokens_per_minute=200000,provider="litellm")
+        
+        # Create default request limits with provider-specific settings
+        self.oai_request_limits = oai_request_limits or RequestLimits(
+            max_requests_per_minute=500,
+            max_tokens_per_minute=200000,
+            provider="openai"
+        )
+        self.anthropic_request_limits = anthropic_request_limits or RequestLimits(
+            max_requests_per_minute=50,
+            max_tokens_per_minute=40000,
+            provider="anthropic"
+        )
+        self.vllm_request_limits = vllm_request_limits or RequestLimits(
+            max_requests_per_minute=500,
+            max_tokens_per_minute=200000,
+            provider="vllm"
+        )
+        self.litellm_request_limits = litellm_request_limits or RequestLimits(
+            max_requests_per_minute=500,
+            max_tokens_per_minute=200000,
+            provider="litellm"
+        )
+        
         self.local_cache = local_cache
         self.cache_folder = self._setup_cache_folder(cache_folder)
         self.all_requests = []
@@ -81,28 +114,21 @@ class InferenceOrchestrator:
         results = await asyncio.gather(*tasks)
         flattened_results = [item for sublist in results for item in sublist]
         
-        # Track requests
-        self.all_requests.extend(flattened_results)
-        
-        # Update the history for each chat thread
-        for output in flattened_results:
-            chat_thread = ChatThread.get(output.chat_thread_id)
-            if chat_thread:
-                # Add user message and get assistant response
-                user_message = chat_thread.add_user_message()
-                
-                if output.json_object:
-                    # For tool responses (both Callable and Structured), use add_assistant_and_tool_execution_response
-                    assistant_message, tool_response = chat_thread.add_assistant_and_tool_execution_response(output)
-                    print(f"Added tool response for {output.json_object.name}")
-                else:
-                    # For regular responses, just add the assistant response
-                    assistant_message = chat_thread.add_assistant_response(output, user_message.id)
-                    print(f"Added regular assistant response")
+        # Create new ProcessedOutputs with unique IDs
+        processed_outputs = []
+        for result in flattened_results:
+            try:
+                # Only create ProcessedOutput if result is RawOutput
+                if isinstance(result, RawOutput):
+                    processed_output = result.create_processed_output()
+                    processed_outputs.append(processed_output)
+                elif isinstance(result, ProcessedOutput):
+                    processed_outputs.append(result)
+            except Exception as e:
+                print(f"Error processing result: {e}")
+                continue
 
-                print(f"Updated history length for chat_thread_id {chat_thread.id}: {len(chat_thread.history)}")
-
-        return flattened_results
+        return processed_outputs
         
     def get_all_requests(self):
         requests = self.all_requests
@@ -178,7 +204,7 @@ class InferenceOrchestrator:
             request = self._convert_chat_thread_to_request(chat_thread, client)
             if request:
                 metadata = {
-                    "chat_thread_id": chat_thread.id,
+                    "chat_thread_id": str(chat_thread.id),
                     "start_time": time.time(),
                     "end_time": None,
                     "total_time": None
