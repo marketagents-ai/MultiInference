@@ -484,17 +484,25 @@ class StructuredTool(Entity):
     )
 
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Pseudo-execute for structured output validation.
-        Returns the input data if it matches the schema.
-        """
+        """Execute structured output validation."""
+        EntityRegistry._logger.debug(f"StructuredTool({self.id}): Validating input for '{self.name}'")
+        
         try:
             # Validate input against schema
-            
             validate(instance=input_data, schema=self.json_schema)
+            EntityRegistry._logger.debug(f"StructuredTool({self.id}): Validation successful")
             return input_data
+            
         except Exception as e:
-            raise ValueError(f"Input data does not match schema: {str(e)}")
+            EntityRegistry._logger.error(f"StructuredTool({self.id}): Validation failed - {str(e)}")
+            return {"error": str(e)}
+
+    async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Async version of execute - for consistency with CallableTool interface.
+        Since validation is CPU-bound, we don't need true async here.
+        """
+        return self.execute(input_data)
 
     def _custom_serialize(self) -> Dict[str, Any]:
         """Serialize tool-specific data."""
@@ -1176,9 +1184,56 @@ class ChatThread(Entity):
         return [msg.to_dict() for msg in self.message_objects]
 
     @property
-    def oai_messages(self) -> List[ChatCompletionMessageParam]:
-        """Get messages in OpenAI format."""
-        return msg_dict_to_oai(self.messages)
+    def oai_messages(self) -> List[Dict[str, Any]]:
+        """Convert chat history to OpenAI message format."""
+        EntityRegistry._logger.debug(f"Converting ChatThread({self.id}) history to OpenAI format")
+        messages = []
+        
+        if self.system_prompt:
+            messages.append({
+                "role": "system",
+                "content": self.system_prompt.content
+            })
+        
+        for msg in self.history:
+            EntityRegistry._logger.debug(f"Processing message: role={msg.role}, "
+                                      f"tool_call_id={msg.oai_tool_call_id}")
+            
+            if msg.role == MessageRole.user:
+                messages.append({
+                    "role": "user",
+                    "content": msg.content
+                })
+                
+            elif msg.role == MessageRole.assistant:
+                if msg.tool_call:
+                    messages.append({
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [{
+                            "id": msg.oai_tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": msg.tool_name,
+                                "arguments": json.dumps(msg.tool_call)
+                            }
+                        }]
+                    })
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": msg.content
+                    })
+                
+            elif msg.role == MessageRole.tool:
+                messages.append({
+                    "role": "tool",
+                    "content": msg.content,
+                    "tool_call_id": msg.oai_tool_call_id
+                })
+        
+        EntityRegistry._logger.debug(f"Final messages for ChatThread({self.id}): {messages}")
+        return messages
 
     @property
     def anthropic_messages(self) -> Tuple[List[TextBlockParam], List[MessageParam]]:
@@ -1199,160 +1254,66 @@ class ChatThread(Entity):
             return self.structured_output
         return None
 
-    def add_user_message(self, new_message: Optional[str] = None) -> ChatMessage:
-        """Add current new_message as user message."""
-        if self.new_message is None and new_message is None:
-            raise ValueError("both self.new_message and new_message are None, cannot add to history")
+    def add_user_message(self) -> ChatMessage:
+        """Add a user message to history."""
+        if not self.new_message:
+            raise ValueError("Cannot add user message - no new message content")
             
-        # Get the message content, ensuring it's not None
-        message_content = new_message if new_message is not None else self.new_message
-        if message_content is None:
-            raise ValueError("message content is None")
-            
-        last_message = self.history[-1] if self.history else None
         user_message = ChatMessage(
             role=MessageRole.user,
-            content=message_content,  # Now we're sure this is str, not Optional[str]
-            parent_message_uuid=last_message.id if last_message else None
+            content=self.new_message,
+            parent_message_uuid=self.history[-1].id if self.history else None
         )
         self.history.append(user_message)
-        self.new_message = None
+        EntityRegistry._logger.info(f"Added user message({user_message.id}) to ChatThread({self.id})")
         return user_message
 
-    def get_last_message_uuid(self) -> Optional[UUID]:
-        """Get UUID of the last message in history."""
-        if not self.history:
-            return None
-        return self.history[-1].id
-
-
-    def add_assistant_response(self, llm_output: ProcessedOutput, user_message_uuid: UUID) -> ChatMessage:
-        """
-        Add the assistant's response from ProcessedOutput to history.
+    async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
+        """Add a chat turn to history, including any tool executions."""
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
+        EntityRegistry._logger.debug(f"ProcessedOutput content: {output.content}, json_object: {output.json_object}")
         
-        Args:
-            llm_output: Processed LLM output
-            user_message_uuid: UUID of the user message this responds to
-            
-        Returns:
-            The created assistant message
-            
-        Raises:
-            ValueError: If output validation fails
-        """
-        if llm_output.chat_thread_id != self.id:
-            raise ValueError(
-                f"ProcessedOutput chat_thread_id {llm_output.chat_thread_id} "
-                f"does not match chat thread id {self.id}"
-            )
-
-        json_object = llm_output.json_object
-        str_content = llm_output.content
-
-        # Handle text-only response
-        if not json_object:
-            if not str_content:
-                raise ValueError("ProcessedOutput has no content or JSON object")
-            return self.add_assistant_message(str_content, user_message_uuid)
-
-        # Handle tool/structured responses
-        tool_name = json_object.name
-        tool = self.get_tool_by_name(tool_name)
+        # Get the last user message
+        if not self.history or self.history[-1].role != MessageRole.user:
+            raise ValueError("Expected last message to be a user message")
+        user_message = self.history[-1]
         
-        if not tool:
-            raise ValueError(f"Tool {tool_name} not found")
-
-        if self.llm_config.response_format in [ResponseFormat.auto_tools, ResponseFormat.tool]:
-            message = ChatMessage(
-                role=MessageRole.assistant,
-                content=str_content or "",
-                parent_message_uuid=user_message_uuid,
-                tool_name=tool_name,
-                tool_uuid=tool.id,
-                tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
-                oai_tool_call_id=json_object.tool_call_id,
-                tool_json_schema=tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema,
-                tool_call=json_object.object
-            )
-        else:
-            message = ChatMessage(
-                role=MessageRole.assistant,
-                content=json.dumps(json_object.object),
-                parent_message_uuid=user_message_uuid,
-                tool_name=tool_name,
-                tool_uuid=tool.id,
-                tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
-                tool_json_schema=tool.input_schema if isinstance(tool, CallableTool) else tool.json_schema
-            )
-
-        self.history.append(message)
-        return message
-
-    def add_assistant_and_tool_execution_response(self, llm_output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
-        """
-        Add assistant response and execute tool if applicable.
-        
-        Args:
-            llm_output: Processed LLM output
-            
-        Returns:
-            Tuple of (assistant message, tool response message)
-            
-        Raises:
-            ValueError: If tool execution fails
-        """
-        user_message_uuid = self.get_last_message_uuid()
-        if not user_message_uuid:
-            raise ValueError("No user message found to respond to")
-            
-        if not llm_output.json_object:
-            raise ValueError("No JSON object in output for tool execution")
-
-        # Add assistant response
-        assistant_message = self.add_assistant_response(llm_output, user_message_uuid)
-
-        # Execute tool
-        tool = self.get_tool_by_name(llm_output.json_object.name)
-        if not tool:
-            raise ValueError(f"Tool {llm_output.json_object.name} not found")
-
-        # Create tool response message
-        tool_response = ChatMessage(
-            role=MessageRole.tool,
-            content=json.dumps(tool.execute(llm_output.json_object.object)),
-            parent_message_uuid=assistant_message.id,
-            tool_name=tool.name,
-            tool_uuid=tool.id,
-            tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
-            oai_tool_call_id=llm_output.json_object.tool_call_id
-        )
-        
-        self.history.append(tool_response)
-        return assistant_message, tool_response
-
-    def add_chat_turn_history(self, llm_output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
-        """
-        Add a complete chat turn (user message + assistant response) to history.
-        
-        Args:
-            llm_output: Processed LLM output
-            
-        Returns:
-            Tuple of (user message, assistant message)
-        """
-        user_message = self.add_user_message()
-        assistant_message = self.add_assistant_response(llm_output, user_message.id)
-        return user_message, assistant_message
-
-    def add_assistant_message(self, content: str, parent_uuid: UUID) -> ChatMessage:
-        """Helper method to add a simple assistant message."""
-        message = ChatMessage(
+        # Create assistant message using OpenAI's tool_call_id from json_object
+        assistant_message = ChatMessage(
             role=MessageRole.assistant,
-            content=content,
-            parent_message_uuid=parent_uuid
+            content=output.content or "",
+            parent_message_uuid=user_message.id,
+            tool_call=output.json_object.object if output.json_object else None,
+            tool_name=output.json_object.name if output.json_object else None,
+            oai_tool_call_id=output.json_object.tool_call_id if output.json_object else None
         )
-        self.history.append(message)
-        return message
+        self.history.append(assistant_message)
+        EntityRegistry._logger.info(f"Added assistant message({assistant_message.id}) with tool_call_id: {assistant_message.oai_tool_call_id}")
+        
+        # Handle tool execution/validation if present
+        if output.json_object and assistant_message:
+            tool = self.get_tool_by_name(output.json_object.name)
+            if tool:
+                if isinstance(tool, StructuredTool):
+                    try:
+                        # Validate against schema
+                        tool.execute(input_data=output.json_object.object)
+                        tool_message = ChatMessage(
+                            role=MessageRole.tool,
+                            content=json.dumps({"status": "validated", "message": "Schema validation successful"}),
+                            tool_name=tool.name,
+                            tool_uuid=tool.id,
+                            tool_type="Structured",
+                            tool_json_schema=tool.json_schema,
+                            parent_message_uuid=assistant_message.id,
+                            oai_tool_call_id=assistant_message.oai_tool_call_id
+                        )
+                        self.history.append(tool_message)
+                        EntityRegistry._logger.info(f"Added tool message({tool_message.id}) with tool_call_id: {tool_message.oai_tool_call_id}")
+                    except Exception as e:
+                        EntityRegistry._logger.error(f"Tool validation failed: {str(e)}")
+                
+        return user_message, assistant_message
 
     def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
         """Get tools in format appropriate for current LLM."""

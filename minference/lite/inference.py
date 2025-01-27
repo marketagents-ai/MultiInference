@@ -12,6 +12,9 @@ import time
 from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool,ToolChoiceToolChoiceAuto
 from minference.lite.models import Entity
+from minference.lite.models import EntityRegistry
+from minference.lite.models import ChatMessage
+from minference.lite.models import MessageRole
 
 
 class RequestLimits(Entity):
@@ -86,21 +89,76 @@ class InferenceOrchestrator:
         return full_path
     
     def _create_chat_thread_hashmap(self, chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
+        """Create a hashmap of chat threads by their IDs."""
         return {p.id: p for p in chat_threads if p.id is not None}
     
-    def _update_chat_thread_history(self, chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ChatThread]:
+    async def _update_chat_thread_history(self, chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ChatThread]:
+        """Update chat thread histories with processed outputs."""
         chat_thread_hashmap = self._create_chat_thread_hashmap(chat_threads)
+        
         for output in llm_outputs:
             if output.chat_thread_id:
-                print(f"updating chat thread history for chat_thread_id: {output.chat_thread_id} with output: {output}")
-                chat_thread_hashmap[output.chat_thread_id].add_chat_turn_history(output)
+                EntityRegistry._logger.debug(
+                    f"Updating ChatThread({output.chat_thread_id}) with ProcessedOutput({output.id})"
+                )
+                try:
+                    chat_thread = chat_thread_hashmap[output.chat_thread_id]
+                    # Need to await the coroutine before unpacking
+                    messages = await chat_thread.add_chat_turn_history(output)
+                    user_message, assistant_message = messages
+                    EntityRegistry._logger.info(
+                        f"Updated ChatThread({output.chat_thread_id}): "
+                        f"Added user message({user_message.id}) and assistant message({assistant_message.id})"
+                    )
+                    
+                    # Handle tool execution if needed
+                    if output.json_object and assistant_message:
+                        tool = chat_thread.get_tool_by_name(output.json_object.name)
+                        if tool and isinstance(tool, CallableTool):
+                            EntityRegistry._logger.info(
+                                f"Executing tool {tool.name} for ChatThread({chat_thread.id})"
+                            )
+                            try:
+                                tool_result = await tool.aexecute(input_data=output.json_object.object)
+                                tool_message = ChatMessage(
+                                    role=MessageRole.tool,
+                                    content=json.dumps(tool_result),
+                                    parent_message_uuid=assistant_message.id
+                                )
+                                chat_thread.history.append(tool_message)
+                                EntityRegistry._logger.debug(f"Tool execution successful")
+                            except Exception as e:
+                                EntityRegistry._logger.error(f"Tool execution failed: {str(e)}")
+                                error_message = ChatMessage(
+                                    role=MessageRole.tool,
+                                    content=json.dumps({"error": str(e)}),
+                                    parent_message_uuid=assistant_message.id
+                                )
+                                chat_thread.history.append(error_message)
+                except Exception as e:
+                    EntityRegistry._logger.error(
+                        f"Failed to update ChatThread({output.chat_thread_id}): {str(e)}"
+                    )
+                    
         return list(chat_thread_hashmap.values())
     
     
 
     async def run_parallel_ai_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
-        print("Running parallel AI completion")
+        """Run parallel AI completion for multiple chat threads."""
+        EntityRegistry._logger.info(f"Starting parallel AI completion for {len(chat_threads)} chat threads")
         
+        # First add user messages to all chat threads
+        for chat in chat_threads:
+            try:
+                EntityRegistry._logger.debug(f"Adding user message to ChatThread({chat.id})")
+                chat.add_user_message()
+            except Exception as e:
+                if chat.llm_config.response_format != ResponseFormat.auto_tools:
+                    chat_threads.remove(chat)
+                    EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.id}): {e}, removed from thread list")
+
+        # Run LLM completions in parallel
         tasks = []
         if any(p for p in chat_threads if p.llm_config.client == "openai"):
             tasks.append(self._run_openai_completion([p for p in chat_threads if p.llm_config.client == "openai"]))
@@ -112,28 +170,53 @@ class InferenceOrchestrator:
             tasks.append(self._run_litellm_completion([p for p in chat_threads if p.llm_config.client == "litellm"]))
 
         results = await asyncio.gather(*tasks)
-        flattened_results = [item for sublist in results for item in sublist]
+        llm_outputs = [item for sublist in results for item in sublist]
         
-        # Create new ProcessedOutputs with unique IDs
-        processed_outputs = []
-        for result in flattened_results:
-            try:
-                # Only create ProcessedOutput if result is RawOutput
-                if isinstance(result, RawOutput):
-                    processed_output = result.create_processed_output()
-                    processed_outputs.append(processed_output)
-                elif isinstance(result, ProcessedOutput):
-                    processed_outputs.append(result)
-            except Exception as e:
-                print(f"Error processing result: {e}")
-                continue
-
+        # Process LLM outputs and execute tools in parallel
+        EntityRegistry._logger.info(f"Processing LLM outputs and executing tools")
+        processed_outputs = await self._process_outputs_and_execute_tools(chat_threads, llm_outputs)
+        
         return processed_outputs
+
+    async def _process_outputs_and_execute_tools(self, chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
+        """Process outputs and execute tools in parallel."""
+        chat_thread_hashmap = self._create_chat_thread_hashmap(chat_threads)
+        history_update_tasks = []
         
-    def get_all_requests(self):
-        requests = self.all_requests
-        self.all_requests = []  
-        return requests
+        for output in llm_outputs:
+            if output.chat_thread_id:
+                try:
+                    chat_thread = chat_thread_hashmap[output.chat_thread_id]
+                    # Queue the history update task
+                    history_update_tasks.append(
+                        chat_thread.add_chat_turn_history(output)
+                    )
+                    EntityRegistry._logger.debug(
+                        f"Queued history update for ChatThread({output.chat_thread_id})"
+                    )
+                except Exception as e:
+                    EntityRegistry._logger.error(
+                        f"Failed to queue history update for ChatThread({output.chat_thread_id}): {str(e)}"
+                    )
+        
+        # Execute all history updates in parallel
+        if history_update_tasks:
+            EntityRegistry._logger.info(f"Executing {len(history_update_tasks)} history updates in parallel")
+            try:
+                results = await asyncio.gather(*history_update_tasks)
+                for chat_thread_id, (user_msg, assistant_msg) in zip(
+                    [o.chat_thread_id for o in llm_outputs if o.chat_thread_id], 
+                    results
+                ):
+                    EntityRegistry._logger.info(
+                        f"Updated ChatThread({chat_thread_id}): "
+                        f"Added user message({user_msg.id}) and assistant message({assistant_msg.id})"
+                    )
+                EntityRegistry._logger.info("All history updates completed")
+            except Exception as e:
+                EntityRegistry._logger.error(f"Error during parallel history updates: {str(e)}")
+        
+        return llm_outputs
 
     async def _run_openai_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
         
@@ -393,23 +476,24 @@ class InferenceOrchestrator:
         return None
     
 
-    def _parse_results_file(self, filepath: str,client: LLMClient) -> List[ProcessedOutput]:
+    def _parse_results_file(self, filepath: str, client: LLMClient) -> List[ProcessedOutput]:
         results = []
         with open(filepath, 'r') as f:
             for line in f:
                 try:
                     result = json.loads(line)
-                    llm_output = self._convert_result_to_llm_output(result,client)
-                    results.append(llm_output)
+                    processed_output = self._convert_result_to_llm_output(result, client)
+                    results.append(processed_output)
                 except json.JSONDecodeError:
                     print(f"Error decoding JSON: {line}")
                 except Exception as e:
                     print(f"Error processing result: {e}")
         return results
 
-    def _convert_result_to_llm_output(self, result: List[Dict[str, Any]],client: LLMClient) -> ProcessedOutput:
+    def _convert_result_to_llm_output(self, result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
+        """Convert raw result directly to ProcessedOutput."""
         metadata, request_data, response_data = result
-        
+        EntityRegistry._logger.debug(f"Converting result for chat_thread_id: {metadata['chat_thread_id']}")
 
         raw_output = RawOutput(
             raw_result=response_data,
