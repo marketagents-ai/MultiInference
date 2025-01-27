@@ -1271,21 +1271,28 @@ class ChatThread(Entity):
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
-        EntityRegistry._logger.debug(f"ProcessedOutput content: {output.content}, json_object: {output.json_object}")
         
         # Get the last user message
         if not self.history or self.history[-1].role != MessageRole.user:
             raise ValueError("Expected last message to be a user message")
         user_message = self.history[-1]
         
-        # Create assistant message using OpenAI's tool_call_id from json_object
+        # Update user message with chat_thread_uuid if not set
+        if not user_message.chat_thread_uuid:
+            user_message.chat_thread_uuid = self.id
+        
+        # Create assistant message with complete metadata
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
+            chat_thread_uuid=self.id,  # Add chat thread UUID
             parent_message_uuid=user_message.id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
-            oai_tool_call_id=output.json_object.tool_call_id if output.json_object else None
+            tool_uuid=self.structured_output.id if self.structured_output else None,
+            tool_type="Structured" if self.structured_output else None,
+            oai_tool_call_id=output.json_object.tool_call_id if output.json_object else None,
+            tool_json_schema=self.structured_output.json_schema if self.structured_output else None
         )
         self.history.append(assistant_message)
         EntityRegistry._logger.info(f"Added assistant message({assistant_message.id}) with tool_call_id: {assistant_message.oai_tool_call_id}")
@@ -1301,6 +1308,7 @@ class ChatThread(Entity):
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps({"status": "validated", "message": "Schema validation successful"}),
+                            chat_thread_uuid=self.id,  # Add chat thread UUID
                             tool_name=tool.name,
                             tool_uuid=tool.id,
                             tool_type="Structured",
