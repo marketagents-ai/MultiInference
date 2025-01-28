@@ -48,7 +48,7 @@ async def main():
                     system_prompt=system_string,
                     new_message=f"Tell me a programmer joke about the number {i}.",
                     llm_config=llm_config,
-                    structured_output=structured_tool,
+                    forced_output=structured_tool,
                     
                 )
             )

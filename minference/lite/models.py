@@ -285,60 +285,155 @@ class CallableTool(Entity):
         }
     }
     
+    @classmethod
+    def _get_or_register_function(
+        cls,
+        func: Optional[Callable] = None,
+        name: Optional[str] = None,
+        callable_text: Optional[str] = None
+    ) -> tuple[str, Callable]:
+        """
+        Helper method to get an existing function from registry or register a new one.
+        
+        Args:
+            func: Optional callable to register
+            name: Optional name for the function
+            callable_text: Optional source code for the function
+            
+        Returns:
+            Tuple of (function_name, callable_function)
+            
+        Raises:
+            ValueError: If insufficient information provided or registration fails
+        """
+        registry = CallableRegistry
+        
+        # Determine function name
+        if name is None:
+            if func is not None:
+                name = func.__name__
+            else:
+                raise ValueError("Must provide either a name or a callable function")
+                
+        # Check if function already exists in registry
+        existing_func = registry.get(name)
+        if existing_func is not None:
+            return name, existing_func
+            
+        # Register new function
+        if func is not None:
+            registry.register(name, func)
+            return name, func
+        elif callable_text is not None:
+            registry.register_from_text(name, callable_text)
+            registered_func = registry.get(name)
+            if registered_func is None:
+                raise ValueError(f"Failed to register function '{name}' from source code")
+            return name, registered_func
+        else:
+            raise ValueError(
+                f"No function found in registry for '{name}' and no function or "
+                "callable_text provided for registration"
+            )
+
+    @classmethod
+    def from_callable(cls, func: Callable, name: Optional[str] = None, docstring: Optional[str] = None, strict_schema: bool = True) -> 'CallableTool':
+        """Creates a new tool from a callable function."""
+        # Get function source if possible
+        try:
+            callable_text = inspect.getsource(func)
+        except (TypeError, OSError):
+            callable_text = str(func)
+            
+        # Get or register the function
+        func_name, registered_func = cls._get_or_register_function(
+            func=func,
+            name=name,
+            callable_text=callable_text
+        )
+        
+        # Derive schemas
+        input_schema = derive_input_schema(registered_func)
+        output_schema = derive_output_schema(registered_func)
+        
+        # Create tool instance
+        return cls(
+            name=func_name,
+            docstring=docstring or func.__doc__,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            strict_schema=strict_schema,
+            callable_text=callable_text
+        )
+
+    @classmethod
+    def from_registry(cls, name: str) -> 'CallableTool':
+        """Creates a new tool from an existing registry entry."""
+        # Get function from registry
+        func_name, registered_func = cls._get_or_register_function(name=name)
+        
+        # Get function source if possible
+        try:
+            callable_text = inspect.getsource(registered_func)
+        except (TypeError, OSError):
+            callable_text = str(registered_func)
+        
+        # Create tool instance
+        return cls(
+            name=func_name,
+            docstring=registered_func.__doc__,
+            callable_text=callable_text
+        )
+
+    @classmethod
+    def from_source(cls, source: str, name: Optional[str] = None, docstring: Optional[str] = None, strict_schema: bool = True) -> 'CallableTool':
+        """Creates a new tool from source code string."""
+        # Get or register the function
+        func_name, registered_func = cls._get_or_register_function(
+            callable_text=source,
+            name=name
+        )
+        
+        # Create tool instance
+        return cls(
+            name=func_name,
+            docstring=docstring or registered_func.__doc__,
+            strict_schema=strict_schema,
+            callable_text=source
+        )
+
     @model_validator(mode='after')
     def validate_schemas_and_callable(self) -> Self:
-        """
-        Validates the tool's schemas and ensures its callable is registered.
-        """
-        ca_registry = CallableRegistry
-        ca_registry._logger.debug(f"CallableTool({self.id}): Validating function '{self.name}'")
-        
-        func = ca_registry.get(self.name)
-        if func is None:
-            if not self.callable_text:
-                ca_registry._logger.error(f"CallableTool({self.id}): No callable or text provided for '{self.name}'")
-                raise ValueError(f"No callable found in registry for '{self.name}' and no callable_text provided")
-                
-            try:
-                ca_registry.register_from_text(self.name, self.callable_text)
-                func = ca_registry.get(self.name)
-                if func is None:
-                    raise ValueError("Failed to register callable")
-            except Exception as e:
-                ca_registry._logger.error(f"CallableTool({self.id}): Function registration failed for '{self.name}'")
-                raise ValueError(f"Failed to register callable: {str(e)}")
+        """Validates the tool's schemas and ensures its callable is registered."""
+        # Get or register the function
+        func_name, func = self._get_or_register_function(
+            name=self.name,
+            callable_text=self.callable_text
+        )
         
         # Store text representation if not provided
         if not self.callable_text:
             try:
-                self.callable_text = inspect.getsource(func)  # Now func is guaranteed to be callable
+                self.callable_text = inspect.getsource(func)
             except (TypeError, OSError):
                 self.callable_text = str(func)
         
         # Derive and validate schemas
-        derived_input = derive_input_schema(func)  # Now func is guaranteed to be callable
-        derived_output = derive_output_schema(func)  # Now func is guaranteed to be callable
+        derived_input = derive_input_schema(func)
+        derived_output = derive_output_schema(func)
         
-        # Validate against provided schemas if they exist
+        # Validate and set input schema
         if self.input_schema:
-            try:
-                validate_schema_compatibility(derived_input, self.input_schema)
-            except ValueError as e:
-                ca_registry._logger.error(f"CallableTool({self.id}): Input schema validation failed for '{self.name}'")
-                raise ValueError(f"Input schema validation failed: {str(e)}")
+            validate_schema_compatibility(derived_input, self.input_schema)
         else:
             self.input_schema = derived_input
             
+        # Validate and set output schema
         if self.output_schema:
-            try:
-                validate_schema_compatibility(derived_output, self.output_schema)
-            except ValueError as e:
-                ca_registry._logger.error(f"CallableTool({self.id}): Output schema validation failed for '{self.name}'")
-                raise ValueError(f"Output schema validation failed: {str(e)}")
+            validate_schema_compatibility(derived_output, self.output_schema)
         else:
             self.output_schema = derived_output
             
-        ca_registry._logger.debug(f"CallableTool({self.id}): Successfully validated function '{self.name}'")
         return self
     
     def _custom_serialize(self) -> Dict[str, Any]:
@@ -358,34 +453,6 @@ class CallableTool(Entity):
             "input_schema": schemas.get("input", {}),
             "output_schema": schemas.get("output", {})
         }
-    
-    @classmethod
-    def from_callable(
-        cls,
-        func: Callable,
-        name: Optional[str] = None,
-        docstring: Optional[str] = None,
-        strict_schema: bool = True
-    ) -> 'CallableTool':
-        """Creates a new tool from a callable function."""
-        func_name = name or func.__name__
-        
-        # Let the validators handle registration
-        return cls(
-            name=func_name,
-            docstring=docstring or func.__doc__,
-            strict_schema=strict_schema
-        )
-
-    @classmethod
-    def from_registry(cls, name: str) -> 'CallableTool':
-        """Creates a new tool from an existing registry entry."""
-        ca_registry = CallableRegistry
-        if not ca_registry.get(name):
-            raise ValueError(f"No callable found in registry with name: {name}")
-            
-        # Let the validators handle registration
-        return cls(name=name)
     
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the callable with the given input data."""
@@ -1097,9 +1164,9 @@ class ChatThread(Entity):
         description="Whether to use the history"
     )
     
-    structured_output: Optional[StructuredTool] = Field(
+    forced_output: Optional[Union[StructuredTool, CallableTool]] = Field(
         default=None,
-        description="Associated structured output tool"
+        description="Associated forced output tool"
     )
     
     llm_config: LLMConfig = Field(
@@ -1118,9 +1185,11 @@ class ChatThread(Entity):
             return ResponseFormatText(type="text")
         elif self.llm_config.response_format == ResponseFormat.json_object:
             return ResponseFormatJSONObject(type="json_object")
-        elif self.llm_config.response_format == ResponseFormat.structured_output:
-            assert self.structured_output is not None, "Structured output is not set"
-            return self.structured_output.get_openai_json_schema_response()
+        elif self.llm_config.response_format == ResponseFormat.structured_output and isinstance(self.forced_output, StructuredTool):
+            assert self.forced_output is not None, "Structured output is not set"
+            return self.forced_output.get_openai_json_schema_response()
+        elif self.llm_config.response_format == ResponseFormat.tool and isinstance(self.forced_output, CallableTool):
+            return 
         return None
 
     @property
@@ -1140,8 +1209,8 @@ class ChatThread(Entity):
     def system_message(self) -> Optional[Dict[str, str]]:
         """Get system message including schema instruction if needed."""
         content = self.system_prompt.content if self.system_prompt else ""
-        if self.use_schema_instruction and self.structured_output:
-            content = "\n".join([content, self.structured_output.schema_instruction])
+        if self.use_schema_instruction and self.forced_output and isinstance(self.forced_output, StructuredTool):
+            content = "\n".join([content, self.forced_output.schema_instruction])
         return {"role": "system", "content": content} if content else None
 
     @property
@@ -1250,8 +1319,8 @@ class ChatThread(Entity):
         for tool in self.tools:
             if tool.name == tool_name:
                 return tool
-        if self.structured_output and self.structured_output.name == tool_name:
-            return self.structured_output
+        if self.forced_output and self.forced_output.name == tool_name:
+            return self.forced_output
         return None
 
     def add_user_message(self) -> ChatMessage:
@@ -1281,6 +1350,8 @@ class ChatThread(Entity):
         if not user_message.chat_thread_uuid:
             user_message.chat_thread_uuid = self.id
         
+       
+        
         # Create assistant message with complete metadata
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
@@ -1289,10 +1360,10 @@ class ChatThread(Entity):
             parent_message_uuid=user_message.id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
-            tool_uuid=self.structured_output.id if self.structured_output else None,
-            tool_type="Structured" if self.structured_output else None,
+            tool_uuid=self.forced_output.id if self.forced_output else None,
+            tool_type="Structured" if self.forced_output else None,
             oai_tool_call_id=output.json_object.tool_call_id if output.json_object else None,
-            tool_json_schema=self.structured_output.json_schema if self.structured_output else None
+            tool_json_schema=self.forced_output.json_schema if self.forced_output and isinstance(self.forced_output, StructuredTool) else None
         )
         self.history.append(assistant_message)
         EntityRegistry._logger.info(f"Added assistant message({assistant_message.id}) with tool_call_id: {assistant_message.oai_tool_call_id}")

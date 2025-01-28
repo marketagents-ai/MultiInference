@@ -338,8 +338,8 @@ class InferenceOrchestrator:
         }
         if chat_thread.oai_response_format:
             request["response_format"] = chat_thread.oai_response_format
-        if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.structured_output
+        if chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
+            tool = chat_thread.forced_output
             if tool:
                 request["tools"] = [tool.get_openai_tool()]
                 request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
@@ -362,8 +362,8 @@ class InferenceOrchestrator:
             "messages": messages,
             "system": system_content if system_content else None
         }
-        if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.structured_output
+        if chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
+            tool = chat_thread.forced_output
             if tool:
                 request["tools"] = [tool.get_anthropic_tool()]
                 request["tool_choice"] = ToolChoiceToolChoiceTool(name=tool.name, type="tool")
@@ -386,8 +386,8 @@ class InferenceOrchestrator:
             "max_tokens": chat_thread.llm_config.max_tokens,
             "temperature": chat_thread.llm_config.temperature,
         }
-        if chat_thread.llm_config.response_format == "tool" and chat_thread.structured_output:
-            tool = chat_thread.structured_output
+        if chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
+            tool = chat_thread.forced_output
             if tool:
                 request["tools"] = [tool.get_openai_tool()]
                 request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
