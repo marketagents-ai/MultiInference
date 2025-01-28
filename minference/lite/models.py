@@ -1357,11 +1357,13 @@ class ChatThread(Entity):
             return self.forced_output
         return None
 
-    def add_user_message(self) -> ChatMessage:
+    def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        if not self.new_message:
+        if not self.new_message and self.llm_config.response_format != ResponseFormat.auto_tools:
             raise ValueError("Cannot add user message - no new message content")
-            
+        elif not self.new_message and self.llm_config.response_format == ResponseFormat.auto_tools:
+            return None
+        assert self.new_message is not None, "Cannot add user message - no new message content"
         user_message = ChatMessage(
             role=MessageRole.user,
             content=self.new_message,
@@ -1369,27 +1371,24 @@ class ChatThread(Entity):
         )
         self.history.append(user_message)
         EntityRegistry._logger.info(f"Added user message({user_message.id}) to ChatThread({self.id})")
+        self.new_message = None
         return user_message
 
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
         
-        # Get the last user message
-        if not self.history or self.history[-1].role != MessageRole.user:
-            raise ValueError("Expected last message to be a user message")
-        user_message = self.history[-1]
-        
-        # Update user message with chat_thread_uuid if not set
-        if not user_message.chat_thread_uuid:
-            user_message.chat_thread_uuid = self.id
+        # Get the parent message - could be user, assistant, or tool message
+        if not self.history:
+            raise ValueError("Cannot add chat turn to empty history")
+        parent_message = self.history[-1]
         
         # Create assistant message with complete metadata
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
             chat_thread_uuid=self.id,
-            parent_message_uuid=user_message.id,
+            parent_message_uuid=parent_message.id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
             tool_uuid=self.forced_output.id if self.forced_output else None,
@@ -1453,7 +1452,7 @@ class ChatThread(Entity):
                     self.history.append(error_message)
                     EntityRegistry._logger.info(f"Added error message({error_message.id}) for failed tool operation")
         
-        return user_message, assistant_message
+        return parent_message, assistant_message
     def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
         """Get tools in format appropriate for current LLM."""
         if not self.tools:

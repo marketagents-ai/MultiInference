@@ -98,9 +98,9 @@ async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat
             
         step += 1
         
-        # Set up next step if needed
-        if step < max_steps:
-            chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
+        # # Set up next step if needed
+        # if step < max_steps:
+        #     chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
 
 async def main():
     load_dotenv()
@@ -131,7 +131,7 @@ async def main():
         Please break down tasks into appropriate steps and use tools sequentially to achieve the goals.
         After completing all necessary calculations, use check_goal_achieved to summarize the results.
         Explain your reasoning at each step with normal text. I expect at each response both text content and tool calls. 
-        The process will not stop until you use the check_goal_achieved tool.""",
+        The process will not stop until you use the check_goal_achieved tool. be careful not to get stuck in a loop.""",
         name="sequential_tools_system"
     )
 
