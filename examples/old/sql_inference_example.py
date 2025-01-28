@@ -1,7 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
-from abstractions.inference.sql_inference import ParallelAIUtilities, RequestLimits
-from abstractions.inference.sql_models import ChatThread, LLMConfig, Tool, LLMClient,ResponseFormat,    SystemStr
+from minference.core.sql_inference import ParallelAIUtilities, RequestLimits
+from minference.core.sql_models import ChatThread, LLMConfig, Tool, LLMClient,ResponseFormat,    SystemStr
 from typing import Literal, List
 import time
 import os

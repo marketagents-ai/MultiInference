@@ -2,7 +2,7 @@ from typing import Annotated, Generator
 from fastapi import Depends
 from sqlmodel import Session
 from app.db.session import get_session, engine
-from abstractions.inference.sql_inference import ParallelAIUtilities, RequestLimits
+from minference.core.sql_inference import ParallelAIUtilities, RequestLimits
 
 def get_db(session: Session = Depends(get_session)) -> Generator[Session, None, None]:
     try:

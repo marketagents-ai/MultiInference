@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from abstractions.inference.sql_models import (
+from minference.core.sql_models import (
     ChatThread,
     Tool,
     ChatMessage,
@@ -17,10 +17,10 @@ from abstractions.inference.sql_models import (
     ResponseFormat,
     CallableRegistry
 )
-from abstractions.inference.sql_inference import ParallelAIUtilities
-from abstractions.hub.tools import DEFAULT_TOOLS
-from abstractions.hub.system_prompts import SYSTEM_PROMPTS
-from abstractions.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
+from minference.core.sql_inference import ParallelAIUtilities
+from minference.hub.tools import DEFAULT_TOOLS
+from minference.hub.system_prompts import SYSTEM_PROMPTS
+from minference.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
 from app.api.deps import DatabaseDep, get_ai_utils
 
 router = APIRouter(prefix="/chats", tags=["chats"])

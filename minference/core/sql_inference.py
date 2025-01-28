@@ -3,9 +3,9 @@ import asyncio
 import json
 from typing import List, Dict, Any, Optional, Literal
 from pydantic import BaseModel, Field, ValidationError
-from abstractions.inference.sql_models import RawOutput, ProcessedOutput, ChatThread , LLMClient , ResponseFormat, ChatMessage, MessageRole
-from abstractions.inference.clients_models import AnthropicRequest, OpenAIRequest, VLLMRequest
-from abstractions.inference.oai_parallel import process_api_requests_from_file, OAIApiFromFileConfig
+from minference.core.sql_models import RawOutput, ProcessedOutput, ChatThread , LLMClient , ResponseFormat, ChatMessage, MessageRole
+from minference.core.clients_models import AnthropicRequest, OpenAIRequest, VLLMRequest
+from minference.core.oai_parallel import process_api_requests_from_file, OAIApiFromFileConfig
 import os
 from dotenv import load_dotenv
 import time
