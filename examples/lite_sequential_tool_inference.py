@@ -100,7 +100,7 @@ async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat
         
         # Set up next step if needed
         if step < max_steps:
-            chat.new_message = "Continue with the next step."
+            chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
 
 async def main():
     load_dotenv()
@@ -161,11 +161,12 @@ async def main():
     
     # Print final chat history
     print("\nFinal Chat History:")
-    for message in chat.history:
-        print(f"\n{message.role}: {message.content}")
-        if message.tool_call:
-            print(f"Tool Call: {message.tool_name}")
-            print(f"Tool Input: {message.tool_call}")
+    print(chat.history)
+    # for message in chat.history:
+    #     print(f"\n{message.role}: {message.content}")
+    #     if message.tool_call:
+    #         print(f"Tool Call: {message.tool_name}")
+    #         print(f"Tool Input: {message.tool_call}")
 
 if __name__ == "__main__":
     asyncio.run(main())
