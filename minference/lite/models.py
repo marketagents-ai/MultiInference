@@ -935,7 +935,7 @@ class RawOutput(Entity):
     client: LLMClient = Field(
         description="The LLM client used for this call"
     )
-    _parsed_result: Optional[Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]] = Field(
+    parsed_result: Optional[Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]] = Field(
         default=None,
         description="Cached parsed results (content, json_object, usage, error)",
         exclude=True
@@ -978,28 +978,28 @@ class RawOutput(Entity):
 
     def _parse_result(self) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
         """Parse raw result into structured components with caching."""
-        if self._parsed_result is not None:
-            return self._parsed_result
+        if self.parsed_result is not None:
+            return self.parsed_result
             
         # Check for errors first
         if getattr(self.raw_result, "error", None):
-            self._parsed_result = (None, None, None, getattr(self.raw_result, "error", None))
-            return self._parsed_result
+            self.parsed_result = (None, None, None, getattr(self.raw_result, "error", None))
+            return self.parsed_result
 
         provider = self.result_provider
         try:
             if provider == LLMClient.openai:
-                self._parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+                self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             elif provider == LLMClient.anthropic:
-                self._parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
+                self.parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
             elif provider in [LLMClient.vllm, LLMClient.litellm]:
-                self._parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+                self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             else:
                 raise ValueError(f"Unsupported result provider: {provider}")
         except Exception as e:
-            self._parsed_result = (None, None, None, str(e))
+            self.parsed_result = (None, None, None, str(e))
             
-        return self._parsed_result
+        return self.parsed_result
 
     @computed_field
     @property
