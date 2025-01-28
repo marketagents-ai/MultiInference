@@ -70,7 +70,7 @@ def check_goal_achieved(input_data: GoalInput) -> GoalOutput:
         explanation=f"Successfully processed the numbers. Started with {input_data.initial_numbers} and ended with {input_data.final_result}"
     )
 
-async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat: ChatThread) -> None:
+async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat: ChatThread, user_feedback: bool = False) -> None:
     """Run sequential steps using the orchestrator."""
     max_steps = 10
     step = 0
@@ -99,8 +99,9 @@ async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat
         step += 1
         
         # Set up next step if needed
-        if step < max_steps:
-            chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
+        if user_feedback:
+            if step < max_steps:
+                chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
 
 async def main():
     load_dotenv()
@@ -131,7 +132,7 @@ async def main():
         Please break down tasks into appropriate steps and use tools sequentially to achieve the goals.
         After completing all necessary calculations, use check_goal_achieved to summarize the results.
         Explain your reasoning at each step with normal text. I expect at each response both text content and tool calls. 
-        The process will not stop until you use the check_goal_achieved tool.""",
+        The process will not stop until you use the check_goal_achieved tool. be careful not to get stuck in a loop.""",
         name="sequential_tools_system"
     )
 
@@ -155,18 +156,32 @@ async def main():
         ),
         tools=tools
     )
+    chat2  = ChatThread(
+        system_prompt=system_prompt,
+        new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
+        llm_config=LLMConfig(
+            client=LLMClient.openai,
+            model="gpt-4",
+            response_format=ResponseFormat.auto_tools,
+            max_tokens=500
+        ),
+        tools=tools
+    )
 
     print("Starting sequential tool inference...")
-    await run_sequential_steps(orchestrator, chat)
-    
+    await run_sequential_steps(orchestrator, chat, user_feedback=False)
+
+
+    await run_sequential_steps(orchestrator, chat2, user_feedback=True)
+        
     # Print final chat history
-    print("\nFinal Chat History:")
+    print("\nFinal Chat History No user feedback:")
     print(chat.history)
-    # for message in chat.history:
-    #     print(f"\n{message.role}: {message.content}")
-    #     if message.tool_call:
-    #         print(f"Tool Call: {message.tool_name}")
-    #         print(f"Tool Input: {message.tool_call}")
+    print("\nFinal Chat History With user feedback:")
+    print(chat2.history)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
