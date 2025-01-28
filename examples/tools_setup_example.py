@@ -1,3 +1,7 @@
+"""
+Test module for CallableTool, StructuredTool, and ChatThread integration.
+Tests both forced tool mode and auto tool selection mode.
+"""
 from typing import List, Dict, Tuple, Optional, Any
 import json
 import statistics
@@ -14,7 +18,8 @@ from minference.lite.models import (
     LLMClient,
     ResponseFormat,
     SystemPrompt,
-    ChatThread
+    ChatThread,
+    StructuredTool
 )
 from minference.lite.caregistry import CallableRegistry
 from minference.lite.enregistry import EntityRegistry
@@ -121,6 +126,7 @@ def faulty_analyzer(numbers: List[float]) -> Stats:
     )
 """
 
+# Local models for testing
 class NumbersInput(BaseModel):
     numbers: List[float]
     round_to: int = 2
@@ -239,9 +245,9 @@ def custom_analyzer(input_data: NumbersInput) -> Stats:
     except ValueError as e:
         print(f"Caught deleted function execution: {e}")
 
-async def test_tool_integration():
-    """Test integration with ChatThread and LLM system"""
-    print("\n=== Testing Tool Integration with ChatThread ===")
+async def test_forced_tool_integration():
+    """Test integration with ChatThread using forced tool mode"""
+    print("\n=== Testing Forced Tool Integration with ChatThread ===")
     
     # Create tool
     tool = CallableTool.from_source(
@@ -256,7 +262,7 @@ async def test_tool_integration():
         content="You are a statistical analysis assistant. Use the analyze_stats tool to help users understand their data."
     )
     
-    # Create chat thread
+    # Create chat thread with forced tool
     chat = ChatThread(
         system_prompt=system_prompt,
         new_message="Can you analyze these numbers: [1, 2, 3, 4, 5]?",
@@ -268,12 +274,49 @@ async def test_tool_integration():
         forced_output=tool
     )
     
-    # Create orchestrator
+    # Create orchestrator and run
     orchestrator = InferenceOrchestrator()
-    
-    # Run completion
     results = await orchestrator.run_parallel_ai_completion([chat])
-    print(f"LLM Integration results: {results}")
+    print(f"Forced Tool Integration results: {results}")
+    
+    return chat, results
+
+async def test_auto_tool_integration():
+    """Test integration with ChatThread using auto tools mode"""
+    print("\n=== Testing Auto Tool Integration with ChatThread ===")
+    
+    # Create multiple tools
+    tool1 = CallableTool.from_source(
+        source=BASEMODEL_ANALYZER,
+        name="analyze_stats",
+        docstring="Statistical analysis tool"
+    )
+    
+    tool2 = CallableTool.from_source(
+        source=ASYNC_ANALYZER,
+        name="async_stats",
+        docstring="Async statistical analysis"
+    )
+    
+    # Create chat thread with multiple tools
+    chat = ChatThread(
+        system_prompt=SystemPrompt(
+            name="stats_assistant",
+            content="You are a statistical analysis assistant. You have access to multiple analysis tools."
+        ),
+        new_message="Can you analyze these numbers: [1, 2, 3, 4, 5]?",
+        llm_config=LLMConfig(
+            client=LLMClient.openai,
+            model="gpt-4",
+            response_format=ResponseFormat.auto_tools
+        ),
+        tools=[tool1, tool2]
+    )
+    
+    # Create orchestrator and run
+    orchestrator = InferenceOrchestrator()
+    results = await orchestrator.run_parallel_ai_completion([chat])
+    print(f"Auto Tools Integration results: {results}")
     
     return chat, results
 
@@ -320,6 +363,55 @@ def verify_tool_integrity(tool: CallableTool):
     
     print(f"Tool {tool.name} passed integrity check")
 
+async def test_structured_tool_integration():
+    """Test integration with StructuredTool"""
+    print("\n=== Testing Structured Tool Integration ===")
+    
+    # Create a structured tool for stats output
+    stats_schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "values": {
+                "type": "object",
+                "properties": {
+                    "mean": {"type": "number"},
+                    "std": {"type": "number"},
+                    "min": {"type": "number"},
+                    "max": {"type": "number"}
+                },
+                "required": ["mean", "std", "min", "max"]
+            }
+        },
+        "required": ["summary", "values"]
+    }
+    
+    structured_tool = StructuredTool(
+        name="stats_output",
+        description="Generate a statistical analysis summary",
+        json_schema=stats_schema
+    )
+    
+    chat = ChatThread(
+        system_prompt=SystemPrompt(
+            name="stats_assistant",
+            content="You are a statistical analysis assistant. Provide detailed statistical summaries."
+        ),
+        new_message="Can you analyze these numbers: [1, 2, 3, 4, 5]?",
+        llm_config=LLMConfig(
+            client=LLMClient.openai,
+            model="gpt-4",
+            response_format=ResponseFormat.tool
+        ),
+        forced_output=structured_tool
+    )
+    
+    orchestrator = InferenceOrchestrator()
+    results = await orchestrator.run_parallel_ai_completion([chat])
+    print(f"Structured Tool Integration results: {results}")
+    
+    return chat, results
+
 async def main():
     """Run all tests"""
     # Initialize registries
@@ -329,8 +421,10 @@ async def main():
     # Run tests
     await test_type_patterns()
     await test_registry_operations()
-    await test_tool_integration()
+    await test_forced_tool_integration()
+    await test_auto_tool_integration()
     await test_advanced_patterns()
+    await test_structured_tool_integration()
     
     print("\n=== All tests completed successfully ===")
 

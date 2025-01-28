@@ -94,55 +94,6 @@ class InferenceOrchestrator:
         """Create a hashmap of chat threads by their IDs."""
         return {p.id: p for p in chat_threads if p.id is not None}
     
-    async def _update_chat_thread_history(self, chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ChatThread]:
-        """Update chat thread histories with processed outputs."""
-        chat_thread_hashmap = self._create_chat_thread_hashmap(chat_threads)
-        
-        for output in llm_outputs:
-            if output.chat_thread_id:
-                EntityRegistry._logger.debug(
-                    f"Updating ChatThread({output.chat_thread_id}) with ProcessedOutput({output.id})"
-                )
-                try:
-                    chat_thread = chat_thread_hashmap[output.chat_thread_id]
-                    # Need to await the coroutine before unpacking
-                    messages = await chat_thread.add_chat_turn_history(output)
-                    user_message, assistant_message = messages
-                    EntityRegistry._logger.info(
-                        f"Updated ChatThread({output.chat_thread_id}): "
-                        f"Added user message({user_message.id}) and assistant message({assistant_message.id})"
-                    )
-                    
-                    # Handle tool execution if needed
-                    if output.json_object and assistant_message:
-                        tool = chat_thread.get_tool_by_name(output.json_object.name)
-                        if tool and isinstance(tool, CallableTool):
-                            EntityRegistry._logger.info(
-                                f"Executing tool {tool.name} for ChatThread({chat_thread.id})"
-                            )
-                            try:
-                                tool_result = await tool.aexecute(input_data=output.json_object.object)
-                                tool_message = ChatMessage(
-                                    role=MessageRole.tool,
-                                    content=json.dumps(tool_result),
-                                    parent_message_uuid=assistant_message.id
-                                )
-                                chat_thread.history.append(tool_message)
-                                EntityRegistry._logger.debug(f"Tool execution successful")
-                            except Exception as e:
-                                EntityRegistry._logger.error(f"Tool execution failed: {str(e)}")
-                                error_message = ChatMessage(
-                                    role=MessageRole.tool,
-                                    content=json.dumps({"error": str(e)}),
-                                    parent_message_uuid=assistant_message.id
-                                )
-                                chat_thread.history.append(error_message)
-                except Exception as e:
-                    EntityRegistry._logger.error(
-                        f"Failed to update ChatThread({output.chat_thread_id}): {str(e)}"
-                    )
-                    
-        return list(chat_thread_hashmap.values())
     
     
 
