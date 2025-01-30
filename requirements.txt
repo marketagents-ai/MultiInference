@@ -22,3 +22,4 @@ pytest-benchmark
 aiohttp
 polars
 jsonschema
+ipykernel
