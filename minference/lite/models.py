@@ -7,7 +7,9 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple
+from typing_extensions import Self
+
 from enum import Enum
 
 from uuid import UUID, uuid4
