@@ -5,8 +5,8 @@ from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClien
 from typing import List
 from pydantic import BaseModel
 import time
-from minference.lite.enregistry import EntityRegistry
-from minference.lite.caregistry import CallableRegistry
+from minference.enregistry import EntityRegistry
+from minference.caregistry import CallableRegistry
 
 async def main():
     load_dotenv()

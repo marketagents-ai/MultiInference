@@ -17,7 +17,7 @@ from uuid import UUID
 import json
 from datetime import datetime
 
-from minference.lite.base_registry import BaseRegistry
+from minference.base_registry import BaseRegistry
 
 @runtime_checkable
 class HasID(Protocol):

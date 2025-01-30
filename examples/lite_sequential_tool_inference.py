@@ -4,8 +4,8 @@ from minference.lite.inference import InferenceOrchestrator, RequestLimits
 from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool
 from typing import List
 from pydantic import BaseModel
-from minference.lite.enregistry import EntityRegistry
-from minference.lite.caregistry import CallableRegistry
+from minference.enregistry import EntityRegistry
+from minference.caregistry import CallableRegistry
 import statistics
 
 # Example BaseModel for inputs/outputs
@@ -183,3 +183,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+

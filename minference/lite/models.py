@@ -22,8 +22,8 @@ from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
 from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
-from minference.lite.enregistry import EntityRegistry
-from minference.lite.caregistry import (
+from minference.enregistry import EntityRegistry
+from minference.caregistry import (
     CallableRegistry,
     derive_input_schema,
     derive_output_schema,
@@ -1465,3 +1465,7 @@ class ChatThread(Entity):
             elif self.llm_config.client == LLMClient.anthropic:
                 tools.append(tool.get_anthropic_tool())
         return tools if tools else None
+
+
+
+
