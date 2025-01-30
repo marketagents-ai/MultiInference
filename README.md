@@ -52,7 +52,7 @@ Key dependencies and their purposes:
 ### Using pip
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/MarketInference.git
+git clone https://github.com/marketagents-ai/MarketInference.git
 cd MarketInference
 
 # Install dependencies
@@ -65,7 +65,7 @@ pip install -e .
 ### Using Conda
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/MarketInference.git
+git clone https://github.com/marketagents-ai/MarketInference.git
 cd MarketInference
 
 # Create and activate conda environment
@@ -110,17 +110,24 @@ MAX_TOKENS_PER_MINUTE=100000
 
 1. Basic usage example:
 ```python
-from minference.lite import InferenceOrchestrator
+from minference.lite.inference import InferenceOrchestrator
 from minference.lite.models import ChatThread, LLMClient
 
 # Initialize the orchestrator
-orchestrator = InferenceOrchestrator()
+orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
 
 # Create a chat thread
-chat_thread = ChatThread(
-    messages=[{"role": "user", "content": "Hello, how are you?"}],
-    llm_client=LLMClient(provider="openai", model="gpt-4")
-)
+chat_thread =         ChatThread(
+            llm_config=LLMConfig(
+                client=LLMClient.openai,
+                model="gpt-4",
+                response_format=ResponseFormat.tool,  
+                max_tokens=1000,
+                temperature=0
+            ),
+            tools=[weather_tool]
+        )
+
 
 # Run inference
 result = await orchestrator.run_inference(chat_thread)
@@ -131,19 +138,20 @@ print(result.content)
 ```python
 from minference.caregistry import CallableRegistry
 
-# Register a tool
-@CallableRegistry.register
+CallableRegistry()
+
 def calculate_sum(a: int, b: int) -> int:
     """Calculate the sum of two numbers."""
     return a + b
+calcuate_addition = CallableTool.from_callable(calculate_sum)
 
 # Use in chat with tool calling
 chat_thread = ChatThread(
-    messages=[{"role": "user", "content": "What is 5 + 3?"}],
+    new_message=[{"role": "user", "content": "What is 5 + 3?"}],
     llm_client=LLMClient(
         provider="anthropic",
         model="claude-3-opus-20240229",
-        tools=[calculate_sum]
+        tools=[calcuate_addition]
     )
 )
 ```
@@ -155,14 +163,14 @@ The `examples/` directory contains several example implementations:
 1. `lite_inference_example.py`: Basic inference usage
 ```python
 # Example of basic inference with a single model
-from minference.lite import InferenceOrchestrator
+from minference.lite.inference import InferenceOrchestrator
 # ... (see examples/lite_inference_example.py)
 ```
 
 2. `lite_sequential_tool_inference.py`: Sequential tool execution
 ```python
 # Example of sequential tool execution
-from minference.lite.models import ChatThread
+from minference.lite.models import ChatThread       
 # ... (see examples/lite_sequential_tool_inference.py)
 ```
 
@@ -197,20 +205,6 @@ chat_threads = [
 results = await orchestrator.run_parallel_inference(chat_threads)
 ```
 
-### Custom Tool Registration
-
-```python
-from minference.caregistry import CallableRegistry
-from typing import Dict, Any
-
-@CallableRegistry.register
-async def fetch_data(url: str) -> Dict[str, Any]:
-    """Fetch data from an API endpoint."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            return await response.json()
-```
-
 ### Entity Management
 
 ```python
@@ -241,18 +235,6 @@ limits = RequestLimits(
 )
 ```
 
-## Development
-
-```bash
-# Install development dependencies
-pip install -r requirements.txt
-
-# Run tests
-pytest tests/
-
-# Run with coverage
-pytest --cov=minference tests/
-```
 
 ## Project Structure
 
@@ -273,7 +255,7 @@ MarketInference/
 │   ├── test_fixtures/     # Test fixtures
 │   ├── test_registration.py
 │   ├── test_schemas.py
-│   └── test_execution.py
+│   └── test_execution.py & more
 ├── examples/               # Usage examples
 └── requirements.txt        # Dependencies
 ```
