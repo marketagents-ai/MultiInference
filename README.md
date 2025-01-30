@@ -117,7 +117,7 @@ from minference.lite.models import ChatThread, LLMClient
 orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
 
 # Create a chat thread
-chat_thread =ChatThread(
+chat_thread = ChatThread(
             llm_config=LLMConfig(
                 client=LLMClient.openai,
                 model="gpt-4",
