@@ -49,10 +49,28 @@ Key dependencies and their purposes:
 
 ## Installation
 
+### Using pip
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/MarketInference.git
 cd MarketInference
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Optional: Install in development mode
+pip install -e .
+```
+
+### Using Conda
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/MarketInference.git
+cd MarketInference
+
+# Create and activate conda environment
+conda create -n market-inference python=3.10
+conda activate market-inference
 
 # Install dependencies
 pip install -r requirements.txt
