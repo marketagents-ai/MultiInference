@@ -19,10 +19,11 @@ from minference.lite.models import (
     ResponseFormat,
     SystemPrompt,
     ChatThread,
-    StructuredTool
+    StructuredTool,
+    RequestLimits
 )
-from minference.lite.caregistry import CallableRegistry
-from minference.lite.enregistry import EntityRegistry
+from minference.caregistry import CallableRegistry
+from minference.enregistry import EntityRegistry
 from minference.lite.inference import InferenceOrchestrator
 
 # Test Functions with different input/output patterns - each as a complete source string

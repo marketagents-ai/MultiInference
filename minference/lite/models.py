@@ -22,8 +22,8 @@ from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
 from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
-from minference.lite.enregistry import EntityRegistry
-from minference.lite.caregistry import (
+from minference.enregistry import EntityRegistry
+from minference.caregistry import (
     CallableRegistry,
     derive_input_schema,
     derive_output_schema,
@@ -1465,3 +1465,23 @@ class ChatThread(Entity):
             elif self.llm_config.client == LLMClient.anthropic:
                 tools.append(tool.get_anthropic_tool())
         return tools if tools else None
+
+
+class RequestLimits(Entity):
+    """
+    Configuration for API request limits.
+    Inherits from Entity for UUID handling and registry integration.
+    """
+    max_requests_per_minute: int = Field(
+        default=50,
+        description="The maximum number of requests per minute for the API"
+    )
+    max_tokens_per_minute: int = Field(
+        default=100000,
+        description="The maximum number of tokens per minute for the API"
+    )
+    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(
+        default="openai",
+        description="The provider of the API"
+    )
+

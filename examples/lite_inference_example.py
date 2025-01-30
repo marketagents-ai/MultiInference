@@ -3,8 +3,8 @@ from dotenv import load_dotenv
 from minference.lite.inference import InferenceOrchestrator, RequestLimits
 from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool
 from typing import Literal, List
-from minference.lite.enregistry import EntityRegistry
-from minference.lite.caregistry import CallableRegistry
+from minference.enregistry import EntityRegistry
+from minference.caregistry import CallableRegistry
 import time
 import os
 
