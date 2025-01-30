@@ -5,7 +5,8 @@ All imports properly managed and type safety enforced.
 import asyncio
 import json
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
+from pydantic import Field
 from dotenv import load_dotenv
 import time
 from uuid import UUID
@@ -14,13 +15,13 @@ from uuid import UUID
 from minference.lite.models import (
     RawOutput, ProcessedOutput, ChatThread, LLMClient,
     ResponseFormat, Entity, EntityRegistry, ChatMessage,
-    MessageRole, RequestLimits
+    MessageRole
 )
-from minference.lite.oai_parallel import (
+from minference.oai_parallel import (
     process_api_requests_from_file,
     OAIApiFromFileConfig
 )
-from minference.lite.inference_utils import (
+from minference.lite.requests import (
     prepare_requests_file,
     convert_chat_thread_to_request,
     create_oai_completion_config,
@@ -31,7 +32,23 @@ from minference.lite.inference_utils import (
 
 
 
-
+class RequestLimits(Entity):
+    """
+    Configuration for API request limits.
+    Inherits from Entity for UUID handling and registry integration.
+    """
+    max_requests_per_minute: int = Field(
+        default=50,
+        description="The maximum number of requests per minute for the API"
+    )
+    max_tokens_per_minute: int = Field(
+        default=100000,
+        description="The maximum number of tokens per minute for the API"
+    )
+    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(
+        default="openai",
+        description="The provider of the API"
+    )
 
 def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
     """Create a hashmap of chat threads by their IDs."""
@@ -144,9 +161,6 @@ def convert_result_to_llm_output(result: List[Dict[str, Any]], client: LLMClient
 
     return raw_output.create_processed_output()
 
-def process_results_file_to_outputs(filepath: str, client: LLMClient) -> List[ProcessedOutput]:
-    """High-level function to process a results file into ProcessedOutput objects."""
-    return parse_results_file(filepath, client)
 
 class InferenceOrchestrator:
     def __init__(self, 

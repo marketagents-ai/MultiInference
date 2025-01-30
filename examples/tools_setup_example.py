@@ -20,11 +20,11 @@ from minference.lite.models import (
     SystemPrompt,
     ChatThread,
     StructuredTool,
-    RequestLimits
+    
 )
 from minference.caregistry import CallableRegistry
 from minference.enregistry import EntityRegistry
-from minference.lite.inference import InferenceOrchestrator
+from minference.lite.inference import InferenceOrchestrator, RequestLimits
 
 # Test Functions with different input/output patterns - each as a complete source string
 BASEMODEL_ANALYZER = """

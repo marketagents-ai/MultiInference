@@ -1467,21 +1467,5 @@ class ChatThread(Entity):
         return tools if tools else None
 
 
-class RequestLimits(Entity):
-    """
-    Configuration for API request limits.
-    Inherits from Entity for UUID handling and registry integration.
-    """
-    max_requests_per_minute: int = Field(
-        default=50,
-        description="The maximum number of requests per minute for the API"
-    )
-    max_tokens_per_minute: int = Field(
-        default=100000,
-        description="The maximum number of tokens per minute for the API"
-    )
-    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(
-        default="openai",
-        description="The provider of the API"
-    )
+
 
