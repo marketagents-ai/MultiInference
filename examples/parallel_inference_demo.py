@@ -24,6 +24,7 @@ CallableRegistry()
 def get_current_weather(location: str, unit: str = "fahrenheit") -> Dict[str, Any]:
     """Get the current weather in a given location."""
     # Simulate API call
+    
     temperature = random.randint(0, 100)
     return {
         "location": location,
@@ -60,8 +61,8 @@ async def main():
         ChatThread(
             llm_config=LLMConfig(
                 client=LLMClient.openai,
-                model="gpt-4",
-                response_format=ResponseFormat.tool,  # Changed back to tool for OpenAI
+                model="gpt-4o-mini",
+                response_format=ResponseFormat.auto_tools,  # Changed back to tool for OpenAI
                 max_tokens=1000,
                 temperature=0
             ),
@@ -70,8 +71,8 @@ async def main():
         ChatThread(
             llm_config=LLMConfig(
                 client=LLMClient.openai,
-                model="gpt-4",
-                response_format=ResponseFormat.tool,  # Changed back to tool for OpenAI
+                model="gpt-4o-mini",
+                response_format=ResponseFormat.auto_tools,  # Changed back to tool for OpenAI
                 max_tokens=1000,
                 temperature=0
             ),

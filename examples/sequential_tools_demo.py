@@ -70,27 +70,27 @@ async def main():
     # Create a chat thread with sequential tool usage
     chat_thread = ChatThread(
         llm_config=LLMConfig(
-            client=LLMClient.anthropic,
-            model="claude-3-opus-20240229",
-            response_format=ResponseFormat.json_beg,
-            max_tokens=1000,
-            temperature=0
+            client=LLMClient.openai,
+            model="gpt-4o-mini", # no anthropic tools
+            response_format=ResponseFormat.workflow,  ## .worksflow 
+            max_tokens=1000, 
+            temperature=0,
         ),
-        tools=[fetch_stock_tool, analyze_sentiment_tool, generate_recommendation_tool]
-    )
-    
-    # Add the message with clear instructions
-    message = """Please help me analyze AAPL stock by following these steps:
+        tools=[fetch_stock_tool, analyze_sentiment_tool, generate_recommendation_tool],
+        new_message= """Please help me analyze AAPL stock by following these steps:
     1. Use the fetch_stock_data tool to get current AAPL stock data
     2. Use the analyze_sentiment tool to analyze this news: 'Apple reports record iPhone sales'
     3. Use the generate_trade_recommendation tool with the data from steps 1 and 2 to get a recommendation
     
     Please execute these tools in sequence and show me the results of each step.
     Please provide your response in JSON format.
-    """
-    chat_thread.new_message = message
-    chat_thread.add_user_message()
+    """,
 
+
+
+    )
+    
+    # Add the message with clear instructions
     try:
         # Run inference
         results = await orchestrator.run_parallel_ai_completion([chat_thread])
