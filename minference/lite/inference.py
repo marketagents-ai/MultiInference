@@ -66,7 +66,7 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
                 history_update_tasks.append(
                     chat_thread.add_chat_turn_history(output)
                 )
-                EntityRegistry._logger.debug(
+                EntityRegistry._logger.info(
                     f"Queued history update for ChatThread({output.chat_thread_id})"
                 )
             except Exception as e:
@@ -98,14 +98,13 @@ async def run_parallel_ai_completion(
 ) -> List[ProcessedOutput]:
     """Run parallel AI completion for multiple chat threads."""
     EntityRegistry._logger.info(f"Starting parallel AI completion for {len(chat_threads)} chat threads")
-    
     # First add user messages to all chat threads
     for chat in chat_threads:
         try:
-            EntityRegistry._logger.debug(f"Adding user message to ChatThread({chat.id})")
+            EntityRegistry._logger.info(f"Adding user message to ChatThread({chat.id})")
             chat.add_user_message()
         except Exception as e:
-            if chat.llm_config.response_format != ResponseFormat.auto_tools:
+            if chat.llm_config.response_format != ResponseFormat.auto_tools or chat.llm_config.response_format != ResponseFormat.workflow:
                 chat_threads.remove(chat)
                 EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.id}): {e}")
 
@@ -131,7 +130,7 @@ async def run_parallel_ai_completion(
 def parse_results_file(filepath: str, client: LLMClient) -> List[ProcessedOutput]:
     """Parse results file and convert to ProcessedOutput objects."""
     results = []
-    EntityRegistry._logger.debug(f"Parsing results from {filepath}")
+    EntityRegistry._logger.info(f"Parsing results from {filepath}")
     with open(filepath, 'r') as f:
         for line in f:
             try:
@@ -148,7 +147,7 @@ def parse_results_file(filepath: str, client: LLMClient) -> List[ProcessedOutput
 def convert_result_to_llm_output(result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
     """Convert raw result directly to ProcessedOutput."""
     metadata, request_data, response_data = result
-    EntityRegistry._logger.debug(f"Converting result for chat_thread_id: {metadata['chat_thread_id']}")
+    EntityRegistry._logger.info(f"Converting result for chat_thread_id: {metadata['chat_thread_id']}")
 
     raw_output = RawOutput(
         raw_result=response_data,
@@ -217,7 +216,7 @@ class InferenceOrchestrator:
             full_path = os.path.join(repo_root, 'outputs', 'inference_cache')
         
         os.makedirs(full_path, exist_ok=True)
-        EntityRegistry._logger.debug(f"Cache folder set up at: {full_path}")
+        EntityRegistry._logger.info(f"Cache folder set up at: {full_path}")
         return full_path
     
     def _create_chat_thread_hashmap(self, chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
@@ -343,6 +342,6 @@ class InferenceOrchestrator:
         for file in files:
             try:
                 os.remove(file)
-                EntityRegistry._logger.debug(f"Deleted file: {file}")
+                EntityRegistry._logger.info(f"Deleted file: {file}")
             except OSError as e:
                 EntityRegistry._logger.error(f"Error deleting file {file}: {e}")
