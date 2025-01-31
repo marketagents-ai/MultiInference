@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 from pydantic import ValidationError, BaseModel, Field
 from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool, ToolChoiceToolChoiceAuto
-from minference.lite.models import ChatThread, LLMClient
+from minference.lite.models import ChatThread, LLMClient, ResponseFormat
 from minference.oai_parallel import OAIApiFromFileConfig
 from minference.enregistry import EntityRegistry
 from pydantic import BaseModel, Field
@@ -24,7 +24,7 @@ from openai.types.shared_params import (
     FunctionDefinition
 )
 from openai.types.chat.completion_create_params import (
-    ResponseFormat,
+    ResponseFormat as OpenAIResponseFormat,
     FunctionCall
 )
 
@@ -52,7 +52,7 @@ class OpenAIRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=None)
     n: Optional[int] = Field(default=None)
     presence_penalty: Optional[float] = Field(default=None)
-    response_format: Optional[ResponseFormat] = Field(default=None)
+    response_format: Optional[OpenAIResponseFormat] = Field(default=None)
     seed: Optional[int] = Field(default=None)
     stop: Optional[Union[str, List[str]]] = Field(default=None)
     stream: Optional[bool] = Field(default=None)
@@ -177,7 +177,7 @@ def prepare_requests_file(chat_threads: List[ChatThread], client: str, filename:
         for request in requests:
             json.dump(request, f)
             f.write('\n')
-    EntityRegistry._logger.debug(f"Wrote {len(requests)} requests to {filename}")
+    EntityRegistry._logger.info(f"Wrote {len(requests)} requests to {filename}")
 
 def validate_anthropic_request(request: Dict[str, Any]) -> bool:
     """Validate an Anthropic API request."""
@@ -208,6 +208,7 @@ def validate_vllm_request(request: Dict[str, Any]) -> bool:
 
 def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
     """Get OpenAI format request from chat thread."""
+    EntityRegistry._logger.info(f"Getting OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
     messages = chat_thread.oai_messages
     request = {
         "model": chat_thread.llm_config.model,
@@ -227,9 +228,30 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         if tools:
             request["tools"] = [t.get_openai_tool() for t in tools]
             request["tool_choice"] = "auto"
+            EntityRegistry._logger.info(f"Added {len(tools)} tools to OpenAI request as auto_tools")
+    elif chat_thread.llm_config.response_format == ResponseFormat.workflow:
+        #detected workflow mode 
+        if chat_thread.workflow_step is None:
+            raise ValueError("Workflow step is None")
+        EntityRegistry._logger.info(f"Detected workflow mode for ChatThread({chat_thread.id}) with workflow step {chat_thread.workflow_step}")
+        if chat_thread.workflow_step > len(chat_thread.tools):
+            raise ValueError(f"Workflow step {chat_thread.workflow_step} is out of range for tools: {chat_thread.tools}")
+        tool = chat_thread.tools[chat_thread.workflow_step]
+        if tool:
+            request["tools"] = [tool.get_openai_tool()]
+            request["tool_choice"] = {"type": "function", "function": {"name": tool.name}}
+            EntityRegistry._logger.info(f"Added tool({tool.name}) to OpenAI request as workflow step {chat_thread.workflow_step}")
+            chat_thread.workflow_step += 1
+        else:
+            EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
+    else:
+        raise ValueError(f"Invalid response format: {chat_thread.llm_config.response_format}")
+        
     if validate_openai_request(request):
+        EntityRegistry._logger.info(f"Validated OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
         return request
     else:
+        EntityRegistry._logger.error(f"Failed to validate OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
         return None
 
 def get_anthropic_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
@@ -252,6 +274,20 @@ def get_anthropic_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         if tools:
             request["tools"] = [t.get_anthropic_tool() for t in tools]
             request["tool_choice"] = ToolChoiceToolChoiceAuto(type="auto")
+    elif chat_thread.llm_config.response_format == ResponseFormat.workflow:
+        if chat_thread.workflow_step is None:
+            raise ValueError("Workflow step is None")
+        if chat_thread.workflow_step > len(chat_thread.tools):
+            raise ValueError(f"Workflow step {chat_thread.workflow_step} is out of range for tools: {chat_thread.tools}")
+        tool = chat_thread.tools[chat_thread.workflow_step]
+        if tool:
+            request["tools"] = [tool.get_anthropic_tool()]
+            request["tool_choice"] = ToolChoiceToolChoiceTool(name=tool.name, type="tool")
+            chat_thread.workflow_step += 1
+        else:
+            EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
+
+
 
     if validate_anthropic_request(request):
         return request

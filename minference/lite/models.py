@@ -89,11 +89,11 @@ class Entity(BaseModel):
     def register_entity(self) -> Self:
         """Register this entity instance in the registry."""
         registry = EntityRegistry
-        registry._logger.debug(f"{self.__class__.__name__}({self.id}): Registering entity")
+        registry._logger.info(f"{self.__class__.__name__}({self.id}): Registering entity")
         
         try:
             registry.register(self)
-            registry._logger.debug(f"{self.__class__.__name__}({self.id}): Successfully registered")
+            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully registered")
         except Exception as e:
             registry._logger.error(f"{self.__class__.__name__}({self.id}): Registration failed - {str(e)}")
             raise ValueError(f"Entity registration failed: {str(e)}") from e
@@ -139,7 +139,7 @@ class Entity(BaseModel):
             IOError: If saving fails
         """
         registry = EntityRegistry
-        registry._logger.debug(f"{self.__class__.__name__}({self.id}): Saving to {path}")
+        registry._logger.info(f"{self.__class__.__name__}({self.id}): Saving to {path}")
         
         try:
             # Get base serialization
@@ -166,7 +166,7 @@ class Entity(BaseModel):
             with open(path, 'w') as f:
                 json.dump(serialized, f, indent=2)
                 
-            registry._logger.debug(f"{self.__class__.__name__}({self.id}): Successfully saved")
+            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully saved")
             
         except Exception as e:
             registry._logger.error(f"{self.__class__.__name__}({self.id}): Save failed - {str(e)}")
@@ -188,7 +188,7 @@ class Entity(BaseModel):
             ValueError: If data validation fails
         """
         registry = EntityRegistry
-        registry._logger.debug(f"{cls.__name__}: Loading from {path}")
+        registry._logger.info(f"{cls.__name__}: Loading from {path}")
         
         try:
             # Load file
@@ -209,7 +209,7 @@ class Entity(BaseModel):
             
             # Create instance
             instance = cls(**{**base_data, **custom_data})
-            registry._logger.debug(f"{cls.__name__}({instance.id}): Successfully loaded")
+            registry._logger.info(f"{cls.__name__}({instance.id}): Successfully loaded")
             return instance
             
         except Exception as e:
@@ -457,11 +457,11 @@ class CallableTool(Entity):
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the callable with the given input data."""
         ca_registry = CallableRegistry
-        ca_registry._logger.debug(f"CallableTool({self.id}): Executing '{self.name}'")
+        ca_registry._logger.info(f"CallableTool({self.id}): Executing '{self.name}'")
         
         try:
             result = ca_registry.execute(self.name, input_data)
-            ca_registry._logger.debug(f"CallableTool({self.id}): Execution successful")
+            ca_registry._logger.info(f"CallableTool({self.id}): Execution successful")
             return result
         except Exception as e:
             ca_registry._logger.error(f"CallableTool({self.id}): Execution failed for '{self.name}'")
@@ -484,11 +484,11 @@ class CallableTool(Entity):
             ValueError: If execution fails
         """
         ca_registry = CallableRegistry
-        ca_registry._logger.debug(f"CallableTool({self.id}): Executing '{self.name}' asynchronously")
+        ca_registry._logger.info(f"CallableTool({self.id}): Executing '{self.name}' asynchronously")
         
         try:
             result = await ca_registry.aexecute(self.name, input_data)
-            ca_registry._logger.debug(f"CallableTool({self.id}): Async execution successful")
+            ca_registry._logger.info(f"CallableTool({self.id}): Async execution successful")
             return result
         except Exception as e:
             ca_registry._logger.error(f"CallableTool({self.id}): Async execution failed for '{self.name}'")
@@ -552,12 +552,12 @@ class StructuredTool(Entity):
 
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute structured output validation."""
-        EntityRegistry._logger.debug(f"StructuredTool({self.id}): Validating input for '{self.name}'")
+        EntityRegistry._logger.info(f"StructuredTool({self.id}): Validating input for '{self.name}'")
         
         try:
             # Validate input against schema
             validate(instance=input_data, schema=self.json_schema)
-            EntityRegistry._logger.debug(f"StructuredTool({self.id}): Validation successful")
+            EntityRegistry._logger.info(f"StructuredTool({self.id}): Validation successful")
             return input_data
             
         except Exception as e:
@@ -1075,6 +1075,7 @@ class RawOutput(Entity):
                 completion_tokens=chat_completion.usage.completion_tokens,
                 total_tokens=chat_completion.usage.total_tokens
             )
+        EntityRegistry._logger.info(f"Parsed OpenAI completion:  {json_object.name if json_object else None}, {usage}")
 
         return content, json_object, usage, None
 
@@ -1211,6 +1212,10 @@ class ChatThread(Entity):
         default_factory=list,
         description="Available tools"
     )
+    workflow_step: Optional[int] = Field(
+        default=None,
+        description="Workflow step number"
+    )
 
     @property
     def oai_response_format(self) -> Optional[Union[ResponseFormatText, ResponseFormatJSONObject, ResponseFormatJSONSchema]]:
@@ -1289,7 +1294,7 @@ class ChatThread(Entity):
     @property
     def oai_messages(self) -> List[Dict[str, Any]]:
         """Convert chat history to OpenAI message format."""
-        EntityRegistry._logger.debug(f"Converting ChatThread({self.id}) history to OpenAI format")
+        EntityRegistry._logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
         messages = []
         
         if self.system_prompt:
@@ -1299,7 +1304,7 @@ class ChatThread(Entity):
             })
         
         for msg in self.history:
-            EntityRegistry._logger.debug(f"Processing message: role={msg.role}, "
+            EntityRegistry._logger.info(f"Processing message: role={msg.role}, "
                                       f"tool_call_id={msg.oai_tool_call_id}")
             
             if msg.role == MessageRole.user:
@@ -1335,7 +1340,7 @@ class ChatThread(Entity):
                     "tool_call_id": msg.oai_tool_call_id
                 })
         
-        EntityRegistry._logger.debug(f"Final messages for ChatThread({self.id}): {messages}")
+        EntityRegistry._logger.info(f"Final messages for ChatThread({self.id}): {messages}")
         return messages
 
     @property
@@ -1359,9 +1364,13 @@ class ChatThread(Entity):
 
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        if not self.new_message and self.llm_config.response_format != ResponseFormat.auto_tools:
+        if not self.new_message and self.llm_config.response_format != ResponseFormat.auto_tools and self.llm_config.response_format != ResponseFormat.workflow:
             raise ValueError("Cannot add user message - no new message content")
         elif not self.new_message and self.llm_config.response_format == ResponseFormat.auto_tools:
+            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in auto_tools mode")
+            return None
+        elif not self.new_message and self.llm_config.response_format == ResponseFormat.workflow:
+            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in workflow mode")
             return None
         assert self.new_message is not None, "Cannot add user message - no new message content"
         user_message = ChatMessage(
@@ -1376,7 +1385,7 @@ class ChatThread(Entity):
 
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
         
         # Get the parent message - could be user, assistant, or tool message
         if not self.history:
@@ -1465,6 +1474,22 @@ class ChatThread(Entity):
             elif self.llm_config.client == LLMClient.anthropic:
                 tools.append(tool.get_anthropic_tool())
         return tools if tools else None
+
+    @model_validator(mode='after')
+    def validate_workflow(self) -> Self:
+        """Validate workflow step configuration."""
+        # Initialize workflow step if using workflow response format
+        if self.llm_config.response_format == ResponseFormat.workflow:
+            if self.workflow_step is None:
+                self.workflow_step = 0
+            
+            # Validate step number against tools list
+            if self.workflow_step >= len(self.tools):
+                raise ValueError(
+                    f"Workflow step {self.workflow_step} is out of range - only {len(self.tools)} tools available"
+                )
+        
+        return self
 
 
 
