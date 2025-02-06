@@ -1,7 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
-from minference.core.sql_inference import ParallelAIUtilities, RequestLimits
-from minference.core.sql_models import ChatThread, LLMConfig, Tool, LLMClient, ResponseFormat, SystemStr
+from minference.sql.sql_inference import ParallelAIUtilities, RequestLimits
+from minference.sql.sql_models import ChatThread, LLMConfig, Tool, LLMClient, ResponseFormat, SystemStr
 from typing import List, Optional
 from sqlmodel import create_engine, SQLModel, Session
 from pydantic import BaseModel

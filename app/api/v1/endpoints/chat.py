@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from minference.core.sql_models import (
+from minference.sql.sql_models import (
     ChatThread,
     Tool,
     ChatMessage,
@@ -17,7 +17,7 @@ from minference.core.sql_models import (
     ResponseFormat,
     CallableRegistry
 )
-from minference.core.sql_inference import ParallelAIUtilities
+from minference.sql.sql_inference import ParallelAIUtilities
 from minference.hub.tools import DEFAULT_TOOLS
 from minference.hub.system_prompts import SYSTEM_PROMPTS
 from minference.hub.callable_tools import DEFAULT_CALLABLE_TOOLS
