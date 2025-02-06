@@ -1,12 +1,13 @@
 import asyncio
 from dotenv import load_dotenv
 from minference.lite.inference import InferenceOrchestrator, RequestLimits
-from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool
+from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool, ChatMessage
 from typing import List
 from pydantic import BaseModel
 from minference.enregistry import EntityRegistry
 from minference.caregistry import CallableRegistry
 import statistics
+
 
 # Example BaseModel for inputs/outputs
 class NumbersInput(BaseModel):
@@ -137,15 +138,18 @@ async def main():
     )
 
     # Initialize orchestrator
+    lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
     orchestrator = InferenceOrchestrator(
         oai_request_limits=RequestLimits(
             max_requests_per_minute=500,
             max_tokens_per_minute=200000
-        )
+        ),
+        litellm_request_limits=lite_llm_request_limits
     )
 
     # Create initial chat
-    chat = ChatThread(
+    oai_chat = ChatThread(
         system_prompt=system_prompt,
         new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
         llm_config=LLMConfig(
@@ -156,12 +160,25 @@ async def main():
         ),
         tools=tools
     )
+    litellm_chat = ChatThread(
+        system_prompt=system_prompt,
+        new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
+        llm_config=LLMConfig(
+            client=LLMClient.litellm,
+            model=lite_llm_model,
+            response_format=ResponseFormat.auto_tools,
+            max_tokens=500
+        ),
+        tools=tools
+
+    )
     # chat2  = ChatThread(
     #     system_prompt=system_prompt,
     #     new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
     #     llm_config=LLMConfig(
     #         client=LLMClient.openai,
     #         model="gpt-4",
+
     #         response_format=ResponseFormat.auto_tools,
     #         max_tokens=500
     #     ),
@@ -169,7 +186,9 @@ async def main():
     # )
 
     print("Starting sequential tool inference...")
-    await run_sequential_steps(orchestrator, chat, user_feedback=False)
+    # await run_sequential_steps(orchestrator, oai_chat, user_feedback=False)
+    await run_sequential_steps(orchestrator, litellm_chat, user_feedback=False)
+
 
 
     # await run_sequential_steps(orchestrator, chat2, user_feedback=True)
@@ -183,5 +202,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    print(EntityRegistry.list_by_type(ChatMessage))
 
 

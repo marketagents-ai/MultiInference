@@ -425,9 +425,13 @@ def api_endpoint_from_url(request_url: str) -> Literal["completions", "embedding
             # for vLLM endpoints
             match = re.search(r"^http://localhost:8000/v\d+/(.+)$", request_url)
             if match is None:
-                raise ValueError(f"Invalid URL: {request_url}")
+                if "v1/chat/completions" in request_url:
+                    match = [None,"chat"]
+                else:
+                    raise ValueError(f"Invalid URL: {request_url}")
     if "anthropic" in match[1]:
         return "messages"
+
     elif "chat" in match[1]:
         return "chat"
     elif "embeddings" in match[1]:

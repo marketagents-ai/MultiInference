@@ -111,7 +111,12 @@ async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat
         if result.json_object and result.json_object.name == "check_goal_achieved":
             print("\nGoal achieved, stopping sequence.")
             break
+        elif result.json_object:
+            print(f"Current json object name: {result.json_object.name if result.json_object else None}")
+        else:
+            print("No json object found CAZZO")
             
+
         step += 1
         
         # Set up next step if needed
@@ -153,15 +158,19 @@ async def main():
     )
 
     # Initialize orchestrator
+        # Initialize orchestrator
+    lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
     orchestrator = InferenceOrchestrator(
         oai_request_limits=RequestLimits(
             max_requests_per_minute=500,
             max_tokens_per_minute=200000
-        )
+        ),
+        litellm_request_limits=lite_llm_request_limits
     )
 
     # Create initial chat
-    chat = ChatThread(
+    oai_chat = ChatThread(
         system_prompt=system_prompt,
         new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
         llm_config=LLMConfig(
@@ -172,17 +181,34 @@ async def main():
         ),
         tools=tools
     )
+    litellm_chat = ChatThread(
+        system_prompt=system_prompt,
+        new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
+        llm_config=LLMConfig(
+            client=LLMClient.litellm,
+            model=lite_llm_model,
+            response_format=ResponseFormat.workflow,
+            max_tokens=500
+        ),
+        tools=tools
+    )
+    
+
 
 
     print("Starting sequential tool inference...")
-    await run_sequential_steps(orchestrator, chat, user_feedback=False)
+    # await run_sequential_steps(orchestrator,   oai_chat, user_feedback=False)
+    await run_sequential_steps(orchestrator,   litellm_chat, user_feedback=False)
+
 
 
     # await run_sequential_steps(orchestrator, chat2, user_feedback=True)
         
     # Print final chat history
     print("\nFinal Chat History No user feedback:")
-    print(chat.history)
+    # print(oai_chat.history)
+    print(litellm_chat.history)
+
 
 
 if __name__ == "__main__":

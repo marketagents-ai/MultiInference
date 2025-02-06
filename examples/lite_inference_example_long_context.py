@@ -1,7 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
 from minference.lite.inference import InferenceOrchestrator, RequestLimits
-from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool
+from minference.lite.models import Usage,ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool
 from typing import Literal, List
 from minference.enregistry import EntityRegistry
 from minference.caregistry import CallableRegistry
@@ -13,12 +13,13 @@ async def main():
     EntityRegistry()
     CallableRegistry()
     oai_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
 
 
 
 
-
-    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
+    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits, litellm_request_limits=lite_llm_request_limits)
 
     json_schema = {
         "type": "object",
@@ -255,21 +256,23 @@ che ’n sù si stende, e da piè si rattrappa.                   136:
 
     # OpenAI chats
     openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini", [ResponseFormat.tool], 5)
+    litellm_chats = create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.tool], 5)
     
-    
-    chats_id = [chat.id for chat in openai_chats]
+    all_chats = openai_chats + litellm_chats
+    all_chats = litellm_chats
+    chats_id = [chat.id for chat in all_chats]
         
 
     # print(chats[0].llm_config)
     print("Running parallel completions...")
-    all_chats = openai_chats
+
     start_time = time.time()
     # with Session(engine) as session:
-    completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
-    for chat in openai_chats:
+    completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
+    for chat in all_chats:
 
         chat.new_message = "And why is it funny?"
-    second_step_completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
+    second_step_completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
     end_time = time.time()
     total_time = end_time - start_time
 
@@ -277,9 +280,10 @@ che ’n sù si stende, e da piè si rattrappa.                   136:
     num_text = 0
     num_json = 0
     total_calls = 0
-    return openai_chats
+    return all_chats
 
 
 if __name__ == "__main__":
-    openai_chats = asyncio.run(main())
-    print(openai_chats[0].get_all_usages())
+    all_chats = asyncio.run(main())
+    print(all_chats[0].get_all_usages())
+    print(EntityRegistry.list_by_type(Usage))
