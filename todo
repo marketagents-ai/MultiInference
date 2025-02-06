@@ -1,0 +1,6 @@
+Pydantic models are in for input and output of tools.
+careful with the imports for the tools and the callable registry.
+make sure to imports of the tool be in the same file as the callable registry.
+
+adding more examples with knowledge base and more complex tools.
+log setting and how spammy and verbose (also they might be used by agents to reflect and think and look back) the logs are. talk to lizardperson. (make it pydantic !!! )
