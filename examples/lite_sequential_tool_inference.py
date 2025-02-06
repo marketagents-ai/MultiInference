@@ -150,35 +150,35 @@ async def main():
         new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
         llm_config=LLMConfig(
             client=LLMClient.openai,
-            model="gpt-4",
+            model="gpt-4o-mini",
             response_format=ResponseFormat.auto_tools,
             max_tokens=500
         ),
         tools=tools
     )
-    chat2  = ChatThread(
-        system_prompt=system_prompt,
-        new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
-        llm_config=LLMConfig(
-            client=LLMClient.openai,
-            model="gpt-4",
-            response_format=ResponseFormat.auto_tools,
-            max_tokens=500
-        ),
-        tools=tools
-    )
+    # chat2  = ChatThread(
+    #     system_prompt=system_prompt,
+    #     new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
+    #     llm_config=LLMConfig(
+    #         client=LLMClient.openai,
+    #         model="gpt-4",
+    #         response_format=ResponseFormat.auto_tools,
+    #         max_tokens=500
+    #     ),
+    #     tools=tools
+    # )
 
     print("Starting sequential tool inference...")
     await run_sequential_steps(orchestrator, chat, user_feedback=False)
 
 
-    await run_sequential_steps(orchestrator, chat2, user_feedback=True)
+    # await run_sequential_steps(orchestrator, chat2, user_feedback=True)
         
     # Print final chat history
     print("\nFinal Chat History No user feedback:")
-    print(chat.history)
-    print("\nFinal Chat History With user feedback:")
-    print(chat2.history)
+    # print(chat.history)
+    # print("\nFinal Chat History With user feedback:")
+    # print(chat2.history)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,21 @@ def check_goal_achieved(input_data: GoalInput) -> GoalOutput:
         explanation=f"Successfully processed the numbers. Started with {input_data.initial_numbers} and ended with {input_data.final_result}"
     )
 
+# available_summaries_schemas = Literal["Gang", "supergang","normal_summary"]
+
+
+# def choose_schema(schema: available_summaries_schemas, thread_uuid: UUID) -> Dict[str, Any]:
+#     convert_dict : Dict[available_summaries_schemas, type[BaseModel]] = {}
+    
+#     tool= StructuredTool.from_pydantic(convert_dict(schema))
+#     thread = EntityRegistry.get(thread_uuid)
+#     assert thread is not None
+#     assert thread.llm_config.response_format == ResponseFormat.workflow
+#     thread.tools[-1] = schema
+#     return tool.json_schema
+
+# choose_schema_tool = CallableTool.from_callable(choose_schema)
+
 async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat: ChatThread, user_feedback: bool = False) -> None:
     """Run sequential steps using the orchestrator."""
     max_steps = 10

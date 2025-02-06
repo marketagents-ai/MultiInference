@@ -102,3 +102,4 @@ async def main():
 if __name__ == "__main__":
     openai_chats = asyncio.run(main())
     print(openai_chats[0].history)
+    print(openai_chats[0].get_all_usages())
