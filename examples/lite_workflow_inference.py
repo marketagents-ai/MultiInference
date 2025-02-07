@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from minference.enregistry import EntityRegistry
 from minference.caregistry import CallableRegistry
 import statistics
+from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
 # Example BaseModel for inputs/outputs
 class NumbersInput(BaseModel):
@@ -124,6 +125,11 @@ async def run_sequential_steps(orchestrator: InferenceOrchestrator, initial_chat
             if step < max_steps:
                 chat.new_message = "Continue with the next step. and explain your rationale for choosing the next step."
 
+async def run_parallel_chats(orchestrator: InferenceOrchestrator, all_chats: List[ChatThread]) -> None:
+    """Run multiple chat workflows in parallel."""
+    tasks = [run_sequential_steps(orchestrator, chat, user_feedback=False) for chat in all_chats]
+    await asyncio.gather(*tasks)
+
 async def main():
     load_dotenv()
     
@@ -158,18 +164,20 @@ async def main():
     )
 
     # Initialize orchestrator
-        # Initialize orchestrator
     lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
     lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
+    anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
+    anthropic_model = "claude-3-5-sonnet-latest"
     orchestrator = InferenceOrchestrator(
         oai_request_limits=RequestLimits(
             max_requests_per_minute=500,
             max_tokens_per_minute=200000
         ),
-        litellm_request_limits=lite_llm_request_limits
+        litellm_request_limits=lite_llm_request_limits,
+        anthropic_request_limits=anthropic_request_limits
     )
 
-    # Create initial chat
+    # Create initial chats
     oai_chat = ChatThread(
         system_prompt=system_prompt,
         new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
@@ -192,24 +200,28 @@ async def main():
         ),
         tools=tools
     )
-    
+    anthropic_chat = ChatThread(
+        system_prompt=system_prompt,
+        new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
+        llm_config=LLMConfig(
+            client=LLMClient.anthropic,
+            model=anthropic_model,
+            response_format=ResponseFormat.workflow,
+            max_tokens=500
+        ),
+        tools=tools
+    )
 
+    # Create initial chats and run them in parallel
+    all_chats = [oai_chat, litellm_chat, anthropic_chat]
+    print("Starting parallel sequential tool inference...")
+    await run_parallel_chats(orchestrator, all_chats)
 
-
-    print("Starting sequential tool inference...")
-    # await run_sequential_steps(orchestrator,   oai_chat, user_feedback=False)
-    await run_sequential_steps(orchestrator,   litellm_chat, user_feedback=False)
-
-
-
-    # await run_sequential_steps(orchestrator, chat2, user_feedback=True)
-        
-    # Print final chat history
-    print("\nFinal Chat History No user feedback:")
-    # print(oai_chat.history)
-    print(litellm_chat.history)
-
-
+    # Print final chat histories
+    print("\nFinal Chat Histories:")
+    for chat in all_chats:
+        print(f"\n{chat.llm_config.client} - {chat.llm_config.model}:")
+        print(chat.history)
 
 if __name__ == "__main__":
     asyncio.run(main())

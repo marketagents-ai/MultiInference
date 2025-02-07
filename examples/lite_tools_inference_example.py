@@ -17,7 +17,10 @@ async def main():
     oai_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
     lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
     lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
-    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits, litellm_request_limits=lite_llm_request_limits)
+    anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
+    anthropic_model = "claude-3-5-sonnet-latest"
+
+    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits, litellm_request_limits=lite_llm_request_limits, anthropic_request_limits=anthropic_request_limits)
 
     # Example BaseModel for inputs
     class NumbersInput(BaseModel):
@@ -76,10 +79,10 @@ async def main():
         return chats
 
     # Create OpenAI chats with auto tools format
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o", [ResponseFormat.auto_tools], 1)
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini", [ResponseFormat.auto_tools], 1)
     litellm_chats = create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.auto_tools], 1)
-    all_chats = openai_chats + litellm_chats
-    all_chats = litellm_chats
+    anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.auto_tools], 1)
+    all_chats = openai_chats + litellm_chats + anthropic_chats
     chats_id = [chat.id for chat in all_chats]
 
 
