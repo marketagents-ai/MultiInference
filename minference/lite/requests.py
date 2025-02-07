@@ -244,7 +244,7 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
             chat_thread.workflow_step += 1
         else:
             EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
-    else:
+    elif chat_thread.llm_config.response_format != ResponseFormat.text:
         raise ValueError(f"Invalid response format: {chat_thread.llm_config.response_format}")
         
     if validate_openai_request(request):
