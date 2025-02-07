@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional, Literal
 from pydantic import Field
 from dotenv import load_dotenv
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 # Internal imports - complete set
 from minference.lite.models import (
@@ -176,8 +176,8 @@ class InferenceOrchestrator:
         self.openai_key = os.getenv("OPENAI_KEY", "")  # Default to empty string if None
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.vllm_key = os.getenv("VLLM_API_KEY", "")
-        self.vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
-        self.litellm_endpoint = os.getenv("LITELLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
+        self.default_vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
+        self.default_litellm_endpoint = os.getenv("LITELLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.litellm_key = os.getenv("LITELLM_API_KEY", "")
         
         # Request Limits
@@ -233,10 +233,13 @@ class InferenceOrchestrator:
 
     async def _run_openai_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        requests_file = os.path.join(self.cache_folder, f'openai_requests_{timestamp}.jsonl')
-        results_file = os.path.join(self.cache_folder, f'openai_results_{timestamp}.jsonl')
+        unique_uuid = str(uuid4())
+        requests_file = os.path.join(self.cache_folder, f'openai_requests_{unique_uuid}_{timestamp}.jsonl')
+
+        results_file = os.path.join(self.cache_folder, f'openai_results_{unique_uuid}_{timestamp}.jsonl')
         
         prepare_requests_file(chat_threads, "openai", requests_file)
+
         config = create_oai_completion_config(
             chat_thread=chat_threads[0], 
             requests_file=requests_file, 
@@ -257,9 +260,11 @@ class InferenceOrchestrator:
 
     async def _run_anthropic_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        requests_file = os.path.join(self.cache_folder, f'anthropic_requests_{timestamp}.jsonl')
-        results_file = os.path.join(self.cache_folder, f'anthropic_results_{timestamp}.jsonl')
+        unique_uuid = str(uuid4())
+        requests_file = os.path.join(self.cache_folder, f'anthropic_requests_{unique_uuid}_{timestamp}.jsonl')
+        results_file = os.path.join(self.cache_folder, f'anthropic_results_{unique_uuid}_{timestamp}.jsonl')
         
+
         prepare_requests_file(chat_threads, "anthropic", requests_file)
         config = create_anthropic_completion_config(
             chat_thread=chat_threads[0], 
@@ -281,15 +286,17 @@ class InferenceOrchestrator:
 
     async def _run_vllm_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        requests_file = os.path.join(self.cache_folder, f'vllm_requests_{timestamp}.jsonl')
-        results_file = os.path.join(self.cache_folder, f'vllm_results_{timestamp}.jsonl')
+        unique_uuid = str(uuid4())
+        requests_file = os.path.join(self.cache_folder, f'vllm_requests_{unique_uuid}_{timestamp}.jsonl')
+        results_file = os.path.join(self.cache_folder, f'vllm_results_{unique_uuid}_{timestamp}.jsonl')
         
+
         prepare_requests_file(chat_threads, "vllm", requests_file)
         config = create_vllm_completion_config(
             chat_thread=chat_threads[0], 
             requests_file=requests_file, 
             results_file=results_file,
-            vllm_endpoint=self.vllm_endpoint,
+            vllm_endpoint=self.default_vllm_endpoint,
             vllm_key=self.vllm_key,
             max_requests_per_minute=self.vllm_request_limits.max_requests_per_minute,
             max_tokens_per_minute=self.vllm_request_limits.max_tokens_per_minute
@@ -306,15 +313,17 @@ class InferenceOrchestrator:
 
     async def _run_litellm_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        requests_file = os.path.join(self.cache_folder, f'litellm_requests_{timestamp}.jsonl')
-        results_file = os.path.join(self.cache_folder, f'litellm_results_{timestamp}.jsonl')
+        unique_uuid = str(uuid4())
+        requests_file = os.path.join(self.cache_folder, f'litellm_requests_{unique_uuid}_{timestamp}.jsonl')
+        results_file = os.path.join(self.cache_folder, f'litellm_results_{unique_uuid}_{timestamp}.jsonl')
         
+
         prepare_requests_file(chat_threads, "litellm", requests_file)
         config = create_litellm_completion_config(
             chat_thread=chat_threads[0], 
             requests_file=requests_file, 
             results_file=results_file,
-            litellm_endpoint=self.litellm_endpoint,
+            litellm_endpoint=self.default_litellm_endpoint,
             litellm_key=self.litellm_key,
             max_requests_per_minute=self.litellm_request_limits.max_requests_per_minute,
             max_tokens_per_minute=self.litellm_request_limits.max_tokens_per_minute

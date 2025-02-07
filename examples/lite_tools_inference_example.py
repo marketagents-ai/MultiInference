@@ -15,7 +15,12 @@ async def main():
     CallableRegistry()
     
     oai_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
-    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
+    lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
+    anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
+    anthropic_model = "claude-3-5-sonnet-latest"
+
+    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits, litellm_request_limits=lite_llm_request_limits, anthropic_request_limits=anthropic_request_limits)
 
     # Example BaseModel for inputs
     class NumbersInput(BaseModel):
@@ -74,31 +79,39 @@ async def main():
         return chats
 
     # Create OpenAI chats with auto tools format
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o", [ResponseFormat.auto_tools], 1)
-    chats_id = [chat.id for chat in openai_chats]
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini", [ResponseFormat.auto_tools], 1)
+    litellm_chats = create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.auto_tools], 1)
+    anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.auto_tools], 1)
+    all_chats = openai_chats + litellm_chats + anthropic_chats
+    chats_id = [chat.id for chat in all_chats]
+
 
     print("Running parallel completions...")
     start_time = time.time()
     
     # First completion
-    completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
+    completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
     for result in completion_results:
         print(f"Printing result: {result.json_object}")
     
+
     # Update messages and run second completion
-    for chat in openai_chats:
+    for chat in all_chats:
         chat.new_message = "and which one is the smallest?"
-    second_step_completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
+    second_step_completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
+
     
     # Update messages and run third completion
-    for chat in openai_chats:
+    for chat in all_chats:
         chat.new_message = "and which one is the biggest?"
-    third_step_completion_results = await orchestrator.run_parallel_ai_completion(openai_chats)
+    third_step_completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
+
     
     end_time = time.time()
     total_time = end_time - start_time
     print(f"Total time: {total_time:.2f} seconds")
-    return openai_chats
+    return all_chats
 if __name__ == "__main__":
     openai_chats = asyncio.run(main())
     print(openai_chats[0].history)
+    print(openai_chats[0].get_all_usages())
