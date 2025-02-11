@@ -689,6 +689,7 @@ class LLMClient(str, Enum):
     anthropic = "anthropic"
     vllm = "vllm"
     litellm = "litellm"
+    openrouter = "openrouter"
 
 class ResponseFormat(str, Enum):
     json_beg = "json_beg"
@@ -918,6 +919,9 @@ class SystemPrompt(Entity):
 
 class Usage(Entity):
     """Tracks token usage for LLM interactions."""
+    model: str = Field(
+        description="The model used for the interaction"
+    )
     prompt_tokens: int = Field(
         description="Number of tokens in the prompt"
     )
@@ -1044,7 +1048,8 @@ class RawOutput(Entity):
 
         provider = self.result_provider
         try:
-            if provider == LLMClient.openai:
+            # Handle both OpenAI and OpenRouter formats (they're compatible)
+            if provider in [LLMClient.openai, LLMClient.openrouter]:
                 self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             elif provider == LLMClient.anthropic:
                 self.parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
@@ -1067,6 +1072,9 @@ class RawOutput(Entity):
         """Identify LLM provider from result structure."""
         try:
             ChatCompletion.model_validate(self.raw_result)
+            # Check if it's specifically OpenRouter
+            if "openrouter" in getattr(self.raw_result, "model", "").lower():
+                return LLMClient.openrouter
             return LLMClient.openai
         except:
             try:
@@ -1128,6 +1136,7 @@ class RawOutput(Entity):
         if chat_completion.usage:
 
             usage = Usage(
+                model=chat_completion.model,
                 prompt_tokens=chat_completion.usage.prompt_tokens,
                 completion_tokens=chat_completion.usage.completion_tokens,
                 total_tokens=chat_completion.usage.total_tokens,
@@ -1189,6 +1198,7 @@ class RawOutput(Entity):
 
         if hasattr(message, 'usage'):
             usage = Usage(
+                model=message.model,
                 prompt_tokens=message.usage.input_tokens,
                 completion_tokens=message.usage.output_tokens,
                 total_tokens=message.usage.input_tokens + message.usage.output_tokens,
@@ -1554,8 +1564,9 @@ class ChatThread(Entity):
             return None
             
         tools = []
-        for idx,tool in enumerate(self.tools):
-            if self.llm_config.client in [LLMClient.openai, LLMClient.vllm, LLMClient.litellm]:
+        for idx, tool in enumerate(self.tools):
+            # Add OpenRouter to the OpenAI-compatible clients
+            if self.llm_config.client in [LLMClient.openai, LLMClient.vllm, LLMClient.litellm, LLMClient.openrouter]:
                 tools.append(tool.get_openai_tool())
             elif self.llm_config.client == LLMClient.anthropic:
                 if idx == 0 and self.llm_config.use_cache:

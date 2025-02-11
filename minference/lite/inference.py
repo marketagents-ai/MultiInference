@@ -27,7 +27,8 @@ from minference.lite.requests import (
     create_oai_completion_config,
     create_anthropic_completion_config,
     create_vllm_completion_config,
-    create_litellm_completion_config
+    create_litellm_completion_config,
+    create_openrouter_completion_config
 )
 
 
@@ -45,7 +46,7 @@ class RequestLimits(Entity):
         default=100000,
         description="The maximum number of tokens per minute for the API"
     )
-    provider: Literal["openai", "anthropic", "vllm", "litellm"] = Field(
+    provider: Literal["openai", "anthropic", "vllm", "litellm", "openrouter"] = Field(
         default="openai",
         description="The provider of the API"
     )
@@ -118,6 +119,8 @@ async def run_parallel_ai_completion(
         tasks.append(orchestrator._run_vllm_completion([p for p in chat_threads if p.llm_config.client == "vllm"]))
     if any(p for p in chat_threads if p.llm_config.client == "litellm"):
         tasks.append(orchestrator._run_litellm_completion([p for p in chat_threads if p.llm_config.client == "litellm"]))
+    if any(p for p in chat_threads if p.llm_config.client == "openrouter"):
+        tasks.append(orchestrator._run_openrouter_completion([p for p in chat_threads if p.llm_config.client == "openrouter"]))
 
     results = await asyncio.gather(*tasks)
     llm_outputs = [item for sublist in results for item in sublist]
@@ -167,18 +170,21 @@ class InferenceOrchestrator:
                  anthropic_request_limits: Optional[RequestLimits] = None, 
                  vllm_request_limits: Optional[RequestLimits] = None,
                  litellm_request_limits: Optional[RequestLimits] = None,
+                 openrouter_request_limits: Optional[RequestLimits] = None,
                  local_cache: bool = True,
                  cache_folder: Optional[str] = None):
         load_dotenv()
         EntityRegistry._logger.info("Initializing InferenceOrchestrator")
         
         # API Keys and Endpoints
-        self.openai_key = os.getenv("OPENAI_KEY", "")  # Default to empty string if None
+        self.openai_key = os.getenv("OPENAI_KEY", "")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.vllm_key = os.getenv("VLLM_API_KEY", "")
         self.default_vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.default_litellm_endpoint = os.getenv("LITELLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.litellm_key = os.getenv("LITELLM_API_KEY", "")
+        self.openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.default_openrouter_endpoint = os.getenv("OPENROUTER_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
         
         # Request Limits
         self.oai_request_limits = oai_request_limits or RequestLimits(
@@ -200,6 +206,11 @@ class InferenceOrchestrator:
             max_requests_per_minute=500,
             max_tokens_per_minute=200000,
             provider="litellm"
+        )
+        self.openrouter_request_limits = openrouter_request_limits or RequestLimits(
+            max_requests_per_minute=50,
+            max_tokens_per_minute=40000,
+            provider="openrouter"
         )
         
         # Cache setup
@@ -333,6 +344,32 @@ class InferenceOrchestrator:
             try:
                 await process_api_requests_from_file(config)
                 return self._parse_results_file(results_file, client=LLMClient.litellm)
+            finally:
+                if not self.local_cache:
+                    self._delete_files(requests_file, results_file)
+        return []
+
+    async def _run_openrouter_completion(self, chat_threads: List[ChatThread]) -> List[ProcessedOutput]:
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        unique_uuid = str(uuid4())
+        requests_file = os.path.join(self.cache_folder, f'openrouter_requests_{unique_uuid}_{timestamp}.jsonl')
+        results_file = os.path.join(self.cache_folder, f'openrouter_results_{unique_uuid}_{timestamp}.jsonl')
+        
+        prepare_requests_file(chat_threads, "openrouter", requests_file)
+        config = create_openrouter_completion_config(
+            chat_thread=chat_threads[0], 
+            requests_file=requests_file, 
+            results_file=results_file,
+            openrouter_endpoint=self.default_openrouter_endpoint,
+            openrouter_key=self.openrouter_key,
+            max_requests_per_minute=self.openrouter_request_limits.max_requests_per_minute,
+            max_tokens_per_minute=self.openrouter_request_limits.max_tokens_per_minute
+        )
+        
+        if config:
+            try:
+                await process_api_requests_from_file(config)
+                return self._parse_results_file(results_file, client=LLMClient.openrouter)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)

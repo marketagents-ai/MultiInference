@@ -355,6 +355,11 @@ def get_litellm_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         raise ValueError("VLLM does not support json_object response format otherwise infinite whitespaces are returned")
     return get_openai_request(chat_thread)
 
+def get_openrouter_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
+    """Get OpenRouter format request from chat thread."""
+    # OpenRouter uses OpenAI-compatible format
+    return get_openai_request(chat_thread)
+
 def convert_chat_thread_to_request(chat_thread: ChatThread, client: str) -> Optional[Dict[str, Any]]:
     """Convert chat thread to client-specific request format."""
     if client == "openai":
@@ -365,6 +370,8 @@ def convert_chat_thread_to_request(chat_thread: ChatThread, client: str) -> Opti
         return get_vllm_request(chat_thread)
     elif client == "litellm":
         return get_litellm_request(chat_thread)
+    elif client == "openrouter":
+        return get_openrouter_request(chat_thread)
     else:
         raise ValueError(f"Invalid client: {client}")
 
@@ -454,6 +461,30 @@ def create_litellm_completion_config(
             save_filepath=results_file,
             request_url=litellm_endpoint,
             api_key=litellm_key if litellm_key else "",
+            max_requests_per_minute=max_requests_per_minute,
+            max_tokens_per_minute=max_tokens_per_minute,
+            token_encoding_name="cl100k_base",
+            max_attempts=5,
+            logging_level=20,
+        )
+    return None
+
+def create_openrouter_completion_config(
+    chat_thread: ChatThread, 
+    requests_file: str, 
+    results_file: str,
+    openrouter_endpoint: str,
+    openrouter_key: str,
+    max_requests_per_minute: int,
+    max_tokens_per_minute: int
+) -> Optional[OAIApiFromFileConfig]:
+    """Create OpenRouter completion configuration."""
+    if chat_thread.llm_config.client == "openrouter" and openrouter_key:
+        return OAIApiFromFileConfig(
+            requests_filepath=requests_file,
+            save_filepath=results_file,
+            request_url=openrouter_endpoint,
+            api_key=openrouter_key,
             max_requests_per_minute=max_requests_per_minute,
             max_tokens_per_minute=max_tokens_per_minute,
             token_encoding_name="cl100k_base",
