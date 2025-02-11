@@ -22,7 +22,7 @@ async def main():
 
 
     orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
-
+    EntityRegistry.set_inference_orchestrator(orchestrator)
     json_schema = {
         "type": "object",
         "properties": {
@@ -43,7 +43,7 @@ async def main():
     def create_chats(client:LLMClient, model, response_formats : List[ResponseFormat]= [ResponseFormat.text], count=1) -> List[ChatThread]:
         chats : List[ChatThread] = []
         for response_format in response_formats:
-            llm_config=LLMConfig(client=client, model=model, response_format=response_format,max_tokens=1000)
+            llm_config=LLMConfig(client=client, model=model, response_format=response_format,max_tokens=1000,reasoner=True)
             for i in range(count):
                 chats.append(
                     ChatThread(
@@ -62,7 +62,8 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "o1-2024-12-17",[ResponseFormat.reasoning],1)
+    # openai_chats = create_chats(LLMClient.openai, "o1-2024-12-17",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "o1-2024-12-17",[ResponseFormat.tool],1)
 
 
 

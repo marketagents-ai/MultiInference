@@ -38,6 +38,7 @@ class EntityRegistry(BaseRegistry[EntityType]):
     """
     _registry: Dict[UUID, EntityType] = {}
     _timestamps: Dict[UUID, datetime] = {}
+    _inference_orchestrator: Optional[object] = None
 
     @classmethod
     def register(cls, entity: EntityType) -> None:
@@ -208,3 +209,14 @@ class EntityRegistry(BaseRegistry[EntityType]):
                 "version_count": len(timestamps)
             }
         }
+    
+    @classmethod
+    def set_inference_orchestrator(cls, inference_orchestrator: object) -> None:
+        """Set the inference orchestrator."""
+        cls._inference_orchestrator = inference_orchestrator
+    
+    @classmethod
+    def get_inference_orchestrator(cls) -> Optional[object]:
+        """Get the inference orchestrator."""
+        return cls._inference_orchestrator
+

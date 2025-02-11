@@ -267,15 +267,16 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
             chat_thread.workflow_step += 1
         else:
             EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
-    elif chat_thread.llm_config.response_format == ResponseFormat.reasoning:
+    
+    elif chat_thread.llm_config.response_format != ResponseFormat.text:
+        raise ValueError(f"Invalid response format: {chat_thread.llm_config.response_format}")
+    
+    if chat_thread.llm_config.reasoner:
         request["reasoning_effort"] = chat_thread.llm_config.reasoning_effort
-        request["max_completion_tokens"] = chat_thread.llm_config.max_tokens
         old_max_tokens = request.pop("max_tokens")
         #pop temperature
         request.pop("temperature")
         request["max_completion_tokens"] = old_max_tokens
-    elif chat_thread.llm_config.response_format != ResponseFormat.text:
-        raise ValueError(f"Invalid response format: {chat_thread.llm_config.response_format}")
         
     if validate_openai_request(request):
         EntityRegistry._logger.info(f"Validated OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")

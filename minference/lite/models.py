@@ -698,7 +698,6 @@ class ResponseFormat(str, Enum):
     tool = "tool"
     auto_tools = "auto_tools"
     workflow = "workflow"
-    reasoning = "reasoning"
     
 class MessageRole(str, Enum):
     user = "user"
@@ -745,6 +744,11 @@ class LLMConfig(Entity):
         description="Whether to use response caching"
     )
 
+    reasoner: bool = Field(
+        default=False,
+        description="Whether to use reasoning"
+    )
+
     reasoning_effort: Literal["low", "medium", "high"] = Field(
         default="medium",
         description="The effort level for reasoning"
@@ -764,7 +768,7 @@ class LLMConfig(Entity):
                 "Use json_beg or tool instead"
             )
         
-        if self.response_format == ResponseFormat.reasoning and self.client != LLMClient.openai:
+        if self.reasoner and self.client != LLMClient.openai:
             raise ValueError("Reasoning response format is only supported for OpenAI 01 and 03")
             
         return self
@@ -1320,7 +1324,7 @@ class ChatThread(Entity):
         content = self.system_prompt.content if self.system_prompt else ""
         if self.use_schema_instruction and self.forced_output and isinstance(self.forced_output, StructuredTool):
             content = "\n".join([content, self.forced_output.schema_instruction])
-        if self.llm_config.response_format == ResponseFormat.reasoning and self.llm_config.client == LLMClient.openai:
+        if self.llm_config.reasoner and self.llm_config.client == LLMClient.openai:
             return {"role": "developer", "content": content} if content else None
         return {"role": "system", "content": content} if content else None
 
@@ -1369,9 +1373,14 @@ class ChatThread(Entity):
         EntityRegistry._logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
         messages = []
         
-        if self.system_prompt:
+        if self.system_prompt and not self.llm_config.reasoner:
             messages.append({
                 "role": "system",
+                "content": self.system_prompt.content
+            })
+        elif self.system_prompt and self.llm_config.reasoner:
+            messages.append({
+                "role": "developer",
                 "content": self.system_prompt.content
             })
         
