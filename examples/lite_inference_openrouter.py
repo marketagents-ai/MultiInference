@@ -97,3 +97,5 @@ if __name__ == "__main__":
     print("\nUsage Statistics:")
     for usage in EntityRegistry.list_by_type(Usage):
         print(usage)
+    for chat in all_chats:
+        print(chat.history[-1])

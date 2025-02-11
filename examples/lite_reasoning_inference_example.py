@@ -99,3 +99,5 @@ async def main():
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
     print(EntityRegistry.list_by_type(Usage))
+    for chat in all_chats:
+        print(chat.history[-1])
