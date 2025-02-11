@@ -62,7 +62,7 @@ async def main():
                 chats.append(
                     ChatThread(
                         
-                        new_message=f"Tell me a programmer joke about the number {i}.",
+                        new_message=f"Find the nearest prime number to 23+{i} times {i}.",
                         llm_config=llm_config,
                         forced_output=structured_tool if response_format == ResponseFormat.tool else None,
                     )

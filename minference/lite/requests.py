@@ -63,6 +63,7 @@ class OpenAIRequest(BaseModel):
     user: Optional[str] = Field(default=None)
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(default=None)
     max_completion_tokens: Optional[int] = Field(default=None)
+    include_reasoning: Optional[bool] = Field(default=None)
     class Config:
         extra = 'forbid'
 
@@ -74,6 +75,13 @@ class OpenAIRequest(BaseModel):
             raise ValueError("max_completion_tokens is required for oai reasoning models")
         elif self.model not in ["o1-2024-12-17","o1-mini-2024-09-12","o3-mini-2025-01-31","o1-preview-2024-09-12"] and self.max_completion_tokens is not None:
             raise ValueError("max_completion_tokens is not allowed for non-reasoning models use max_tokens instead")
+        return self
+    @model_validator(mode="after")
+    def validate_include_reasoning(self) -> Self:
+        if self.model in ["deepseek/deepseek-r1"] and self.include_reasoning is None:
+            raise ValueError("include_reasoning is required for deepseek/deepseek-r1")
+        elif self.model not in ["deepseek/deepseek-r1"] and self.include_reasoning is not None:
+            raise ValueError("include_reasoning is not allowed for non-deepseek/deepseek-r1 models")
         return self
 
 class AnthropicRequest(BaseModel):
@@ -239,9 +247,9 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         "temperature": chat_thread.llm_config.temperature,
     }
 
-    if chat_thread.oai_response_format:
+    if chat_thread.llm_config.response_format == ResponseFormat.structured_output and chat_thread.oai_response_format:
         request["response_format"] = chat_thread.oai_response_format
-    if chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
+    elif chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
         tool = chat_thread.forced_output
         if tool:
             request["tools"] = [tool.get_openai_tool()]
@@ -277,6 +285,9 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         #pop temperature
         request.pop("temperature")
         request["max_completion_tokens"] = old_max_tokens
+    if chat_thread.llm_config.model in ["deepseek/deepseek-r1"]:
+        EntityRegistry._logger.info(f"Adding include_reasoning to OpenAI request for ChatThread({chat_thread.id}) with model {chat_thread.llm_config.model}")
+        request["include_reasoning"] = True
         
     if validate_openai_request(request):
         EntityRegistry._logger.info(f"Validated OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
