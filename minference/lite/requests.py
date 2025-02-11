@@ -4,14 +4,14 @@ Maintains exact behavior while making functions reusable outside the orchestrato
 """
 import json
 import time
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Literal, Self
 from pydantic import ValidationError, BaseModel, Field
 from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool, ToolChoiceToolChoiceAuto
 from minference.lite.models import ChatThread, LLMClient, ResponseFormat
 from minference.oai_parallel import OAIApiFromFileConfig
 from minference.enregistry import EntityRegistry
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import  Optional, Union, Dict, List, Any
 
 from openai.types.chat import (
@@ -61,10 +61,20 @@ class OpenAIRequest(BaseModel):
     tools: Optional[List[ChatCompletionToolParam]] = Field(default=None)
     top_p: Optional[float] = Field(default=None)
     user: Optional[str] = Field(default=None)
-
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(default=None)
+    max_completion_tokens: Optional[int] = Field(default=None)
     class Config:
         extra = 'forbid'
 
+    @model_validator(mode="after")
+    def validate_max_completion_tokens(self) -> Self:
+        if self.model in ["o1-2024-12-17","o1-mini-2024-09-12","o3-mini-2025-01-31","o1-preview-2024-09-12"] and self.max_tokens is not None:
+            raise ValueError("max_tokens is not allowed for oai reasoning models you need to use max_completion_tokens instead")
+        elif self.model in ["o1-2024-12-17","o1-mini-2024-09-12","o3-mini-2025-01-31","o1-preview-2024-09-12"] and self.max_completion_tokens is None:
+            raise ValueError("max_completion_tokens is required for oai reasoning models")
+        elif self.model not in ["o1-2024-12-17","o1-mini-2024-09-12","o3-mini-2025-01-31","o1-preview-2024-09-12"] and self.max_completion_tokens is not None:
+            raise ValueError("max_completion_tokens is not allowed for non-reasoning models use max_tokens instead")
+        return self
 
 class AnthropicRequest(BaseModel):
     max_tokens: int
@@ -228,6 +238,7 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         "max_tokens": chat_thread.llm_config.max_tokens,
         "temperature": chat_thread.llm_config.temperature,
     }
+
     if chat_thread.oai_response_format:
         request["response_format"] = chat_thread.oai_response_format
     if chat_thread.llm_config.response_format == "tool" and chat_thread.forced_output:
@@ -256,6 +267,13 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
             chat_thread.workflow_step += 1
         else:
             EntityRegistry._logger.error(f"Tool not found for workflow step {chat_thread.workflow_step}")
+    elif chat_thread.llm_config.response_format == ResponseFormat.reasoning:
+        request["reasoning_effort"] = chat_thread.llm_config.reasoning_effort
+        request["max_completion_tokens"] = chat_thread.llm_config.max_tokens
+        old_max_tokens = request.pop("max_tokens")
+        #pop temperature
+        request.pop("temperature")
+        request["max_completion_tokens"] = old_max_tokens
     elif chat_thread.llm_config.response_format != ResponseFormat.text:
         raise ValueError(f"Invalid response format: {chat_thread.llm_config.response_format}")
         
