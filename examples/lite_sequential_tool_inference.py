@@ -206,6 +206,7 @@ async def main():
     #     tools=tools
     # )
     all_chats = [oai_chat, litellm_chat, anthropic_chat]
+    all_chats = [oai_chat]
     print("Starting sequential tool inference...")
     await run_parallel_chats(orchestrator, all_chats)
 
