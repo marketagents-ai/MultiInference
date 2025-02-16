@@ -4,7 +4,7 @@ from minference.lite.inference import InferenceOrchestrator, RequestLimits
 from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool, ChatMessage
 from typing import List
 from pydantic import BaseModel
-from minference.enregistry import EntityRegistry
+from minference.entity import EntityRegistry
 from minference.caregistry import CallableRegistry
 import statistics
 
