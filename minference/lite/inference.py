@@ -30,7 +30,7 @@ from minference.lite.requests import (
     create_litellm_completion_config,
     create_openrouter_completion_config
 )
-from minference.entity import EntityRegistry
+from minference.entity import EntityRegistry, entity_uuid_expander, entity_uuid_expander_list
 
 
 class RequestLimits(Entity):
@@ -93,6 +93,7 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
     
     return llm_outputs
 
+@entity_uuid_expander_list("chat_threads")
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'
