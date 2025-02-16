@@ -10,7 +10,7 @@ from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool, ToolChoiceToolChoiceAuto
 from minference.lite.models import ChatThread, LLMClient, ResponseFormat
 from minference.oai_parallel import OAIApiFromFileConfig
-from minference.enregistry import EntityRegistry
+from minference.entity import EntityRegistry
 from pydantic import BaseModel, Field, model_validator
 from typing import  Optional, Union, Dict, List, Any
 

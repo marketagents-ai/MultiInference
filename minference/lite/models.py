@@ -22,7 +22,6 @@ from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
 from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
-from minference.enregistry import EntityRegistry
 from minference.caregistry import (
     CallableRegistry,
     derive_input_schema,
@@ -66,187 +65,187 @@ from openai.types.chat.chat_completion import Choice, ChatCompletion
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion import Choice
 
+from minference.entity import Entity, EntityRegistry
+# T = TypeVar('T', bound='Entity')
 
-T = TypeVar('T', bound='Entity')
-
-class Entity(BaseModel):
-    """
-    Base class for registry-integrated, serializable entities.
+# class Entity(BaseModel):
+#     """
+#     Base class for registry-integrated, serializable entities.
     
-    This class provides:
-    1. Integration with EntityRegistry for persistence and retrieval
-    2. Basic serialization interface for saving/loading
-    3. Common entity attributes and operations
+#     This class provides:
+#     1. Integration with EntityRegistry for persistence and retrieval
+#     2. Basic serialization interface for saving/loading
+#     3. Common entity attributes and operations
     
-    Subclasses are responsible for:
-    1. Implementing custom serialization if needed (_custom_serialize/_custom_deserialize)
-    2. Handling any nested entities or complex relationships
-    3. Managing entity-specific validation and business logic
+#     Subclasses are responsible for:
+#     1. Implementing custom serialization if needed (_custom_serialize/_custom_deserialize)
+#     2. Handling any nested entities or complex relationships
+#     3. Managing entity-specific validation and business logic
     
-    All entities are immutable - modifications require creating new instances.
-    """
-    id: UUID = Field(
-        default_factory=uuid4,
-        description="Unique identifier for this entity instance"
-    )
+#     All entities are immutable - modifications require creating new instances.
+#     """
+#     id: UUID = Field(
+#         default_factory=uuid4,
+#         description="Unique identifier for this entity instance"
+#     )
     
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        description="Timestamp when this entity was created"
-    )
+#     created_at: datetime = Field(
+#         default_factory=datetime.utcnow,
+#         description="Timestamp when this entity was created"
+#     )
     
-    class Config:
-        # Add JSON encoders for UUID and datetime
-        json_encoders = {
-            UUID: str,  # Convert UUID to string
-            datetime: lambda v: v.isoformat()  # Convert datetime to ISO format string
-        }
+#     class Config:
+#         # Add JSON encoders for UUID and datetime
+#         json_encoders = {
+#             UUID: str,  # Convert UUID to string
+#             datetime: lambda v: v.isoformat()  # Convert datetime to ISO format string
+#         }
     
-    @model_validator(mode='after')
-    def register_entity(self) -> Self:
-        """Register this entity instance in the registry."""
-        registry = EntityRegistry
-        registry._logger.info(f"{self.__class__.__name__}({self.id}): Registering entity")
+#     @model_validator(mode='after')
+#     def register_entity(self) -> Self:
+#         """Register this entity instance in the registry."""
+#         registry = EntityRegistry
+#         registry._logger.info(f"{self.__class__.__name__}({self.id}): Registering entity")
         
-        try:
-            registry.register(self)
-            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully registered")
-        except Exception as e:
-            registry._logger.error(f"{self.__class__.__name__}({self.id}): Registration failed - {str(e)}")
-            raise ValueError(f"Entity registration failed: {str(e)}") from e
+#         try:
+#             registry.register(self)
+#             registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully registered")
+#         except Exception as e:
+#             registry._logger.error(f"{self.__class__.__name__}({self.id}): Registration failed - {str(e)}")
+#             raise ValueError(f"Entity registration failed: {str(e)}") from e
             
-        return self
+#         return self
     
-    def _custom_serialize(self) -> Dict[str, Any]:
-        """
-        Custom serialization hook for subclasses.
+#     def _custom_serialize(self) -> Dict[str, Any]:
+#         """
+#         Custom serialization hook for subclasses.
         
-        Override this method to add custom serialization logic.
-        The result will be included in the serialized output under 'custom_data'.
+#         Override this method to add custom serialization logic.
+#         The result will be included in the serialized output under 'custom_data'.
         
-        Returns:
-            Dict containing any custom serialized data
-        """
-        return {}
+#         Returns:
+#             Dict containing any custom serialized data
+#         """
+#         return {}
         
-    @classmethod
-    def _custom_deserialize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Custom deserialization hook for subclasses.
+#     @classmethod
+#     def _custom_deserialize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+#         """
+#         Custom deserialization hook for subclasses.
         
-        Override this method to handle custom deserialization logic.
-        The input comes from the 'custom_data' field in serialized data.
+#         Override this method to handle custom deserialization logic.
+#         The input comes from the 'custom_data' field in serialized data.
         
-        Args:
-            data: Custom data from serialized entity
+#         Args:
+#             data: Custom data from serialized entity
             
-        Returns:
-            Dict of deserialized fields to include in entity initialization
-        """
-        return {}
+#         Returns:
+#             Dict of deserialized fields to include in entity initialization
+#         """
+#         return {}
     
-    def save(self, path: Path) -> None:
-        """
-        Save this entity instance to a file.
+#     def save(self, path: Path) -> None:
+#         """
+#         Save this entity instance to a file.
         
-        Args:
-            path: Path where to save the entity
+#         Args:
+#             path: Path where to save the entity
             
-        Raises:
-            IOError: If saving fails
-        """
-        registry = EntityRegistry
-        registry._logger.info(f"{self.__class__.__name__}({self.id}): Saving to {path}")
+#         Raises:
+#             IOError: If saving fails
+#         """
+#         registry = EntityRegistry
+#         registry._logger.info(f"{self.__class__.__name__}({self.id}): Saving to {path}")
         
-        try:
-            # Get base serialization
-            data = self.model_dump()
+#         try:
+#             # Get base serialization
+#             data = self.model_dump()
             
-            # Add metadata
-            metadata = {
-                "entity_type": self.__class__.__name__,
-                "schema_version": "1.0",
-                "saved_at": datetime.utcnow().isoformat()
-            }
+#             # Add metadata
+#             metadata = {
+#                 "entity_type": self.__class__.__name__,
+#                 "schema_version": "1.0",
+#                 "saved_at": datetime.utcnow().isoformat()
+#             }
             
-            # Get custom data
-            custom_data = self._custom_serialize()
+#             # Get custom data
+#             custom_data = self._custom_serialize()
             
-            # Combine all
-            serialized = {
-                "metadata": metadata,
-                "data": data,
-                "custom_data": custom_data
-            }
+#             # Combine all
+#             serialized = {
+#                 "metadata": metadata,
+#                 "data": data,
+#                 "custom_data": custom_data
+#             }
             
-            # Save
-            with open(path, 'w') as f:
-                json.dump(serialized, f, indent=2)
+#             # Save
+#             with open(path, 'w') as f:
+#                 json.dump(serialized, f, indent=2)
                 
-            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully saved")
+#             registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully saved")
             
-        except Exception as e:
-            registry._logger.error(f"{self.__class__.__name__}({self.id}): Save failed - {str(e)}")
-            raise IOError(f"Failed to save entity: {str(e)}") from e
+#         except Exception as e:
+#             registry._logger.error(f"{self.__class__.__name__}({self.id}): Save failed - {str(e)}")
+#             raise IOError(f"Failed to save entity: {str(e)}") from e
     
-    @classmethod
-    def load(cls: Type[T], path: Path) -> T:
-        """
-        Load an entity instance from a file.
+#     @classmethod
+#     def load(cls: Type[T], path: Path) -> T:
+#         """
+#         Load an entity instance from a file.
         
-        Args:
-            path: Path to the saved entity
+#         Args:
+#             path: Path to the saved entity
             
-        Returns:
-            Loaded entity instance
+#         Returns:
+#             Loaded entity instance
             
-        Raises:
-            IOError: If loading fails
-            ValueError: If data validation fails
-        """
-        registry = EntityRegistry
-        registry._logger.info(f"{cls.__name__}: Loading from {path}")
+#         Raises:
+#             IOError: If loading fails
+#             ValueError: If data validation fails
+#         """
+#         registry = EntityRegistry
+#         registry._logger.info(f"{cls.__name__}: Loading from {path}")
         
-        try:
-            # Load file
-            with open(path) as f:
-                serialized = json.load(f)
+#         try:
+#             # Load file
+#             with open(path) as f:
+#                 serialized = json.load(f)
                 
-            # Verify entity type
-            metadata = serialized["metadata"]
-            if metadata["entity_type"] != cls.__name__:
-                raise ValueError(
-                    f"Entity type mismatch. File contains {metadata['entity_type']}, "
-                    f"expected {cls.__name__}"
-                )
+#             # Verify entity type
+#             metadata = serialized["metadata"]
+#             if metadata["entity_type"] != cls.__name__:
+#                 raise ValueError(
+#                     f"Entity type mismatch. File contains {metadata['entity_type']}, "
+#                     f"expected {cls.__name__}"
+#                 )
                 
-            # Get base and custom data
-            base_data = serialized["data"]
-            custom_data = cls._custom_deserialize(serialized.get("custom_data", {}))
+#             # Get base and custom data
+#             base_data = serialized["data"]
+#             custom_data = cls._custom_deserialize(serialized.get("custom_data", {}))
             
-            # Create instance
-            instance = cls(**{**base_data, **custom_data})
-            registry._logger.info(f"{cls.__name__}({instance.id}): Successfully loaded")
-            return instance
+#             # Create instance
+#             instance = cls(**{**base_data, **custom_data})
+#             registry._logger.info(f"{cls.__name__}({instance.id}): Successfully loaded")
+#             return instance
             
-        except Exception as e:
-            registry._logger.error(f"{cls.__name__}: Load failed - {str(e)}")
-            raise IOError(f"Failed to load entity: {str(e)}") from e
+#         except Exception as e:
+#             registry._logger.error(f"{cls.__name__}: Load failed - {str(e)}")
+#             raise IOError(f"Failed to load entity: {str(e)}") from e
             
-    @classmethod
-    def get(cls: Type[T], entity_id: UUID) -> Optional[T]:
-        """Get an entity instance from the registry."""
-        return EntityRegistry.get(entity_id, expected_type=cls)
+#     @classmethod
+#     def get(cls: Type[T], entity_id: UUID) -> Optional[T]:
+#         """Get an entity instance from the registry."""
+#         return EntityRegistry.get(entity_id, expected_type=cls)
         
-    @classmethod
-    def list_all(cls: Type[T]) -> List[T]:
-        """List all entities of this type."""
-        return EntityRegistry.list_by_type(cls)
+#     @classmethod
+#     def list_all(cls: Type[T]) -> List[T]:
+#         """List all entities of this type."""
+#         return EntityRegistry.list_by_type(cls)
         
-    @classmethod
-    def get_many(cls: Type[T], entity_ids: List[UUID]) -> List[T]:
-        """Get multiple entities by their IDs."""
-        return EntityRegistry.get_many(entity_ids, expected_type=cls)
+#     @classmethod
+#     def get_many(cls: Type[T], entity_ids: List[UUID]) -> List[T]:
+#         """Get multiple entities by their IDs."""
+#         return EntityRegistry.get_many(entity_ids, expected_type=cls)
 
 
 class CallableTool(Entity):

@@ -3,11 +3,10 @@ from dotenv import load_dotenv
 from minference.lite.inference import InferenceOrchestrator, RequestLimits
 from minference.lite.models import ChatMessage, ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool, Usage
 from typing import Literal, List
-from minference.enregistry import EntityRegistry
 from minference.caregistry import CallableRegistry
 import time
 from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
-
+from minference.entity import EntityRegistry
 import os
 
 async def main():
@@ -73,7 +72,7 @@ async def main():
     # print(chats[0].llm_config)
     print("Running parallel completions...")
     all_chats = openai_chats+ litellm_chats+anthropic_chats
-    all_chats = all_chats
+    all_chats = openai_chats
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
