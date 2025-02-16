@@ -63,7 +63,7 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],5)+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
     litellm_chats = create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.tool],5)+create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.text],5)
     anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.tool],5)+create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.text],5)
     
@@ -103,3 +103,5 @@ async def main():
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
     print(EntityRegistry.list_by_type(Usage))
+    #print mermaid graph of first chat
+    print(EntityRegistry.get_lineage_tree_sorted(all_chats[0].lineage_id))

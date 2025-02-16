@@ -7,11 +7,11 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self, Annotated
 from enum import Enum
 
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field, model_validator, computed_field
+from pydantic import BaseModel, Field, model_validator, computed_field, ValidationInfo, AfterValidator
 from pathlib import Path
 import json
 from datetime import datetime
@@ -67,7 +67,7 @@ from openai.types.chat.chat_completion import Choice
 
 from minference.entity import Entity, EntityRegistry
 
-
+T_Self = TypeVar('T_Self', bound='CallableTool')
 
 class CallableTool(Entity):
     """
@@ -80,7 +80,7 @@ class CallableTool(Entity):
     
     Any modifications require creating new instances with new UUIDs.
     """    
-    name: str = Field(
+    name: Annotated[str, AfterValidator(lambda x: x)] = Field(
         description="Registry name for the callable function",
         min_length=1
     )
@@ -239,39 +239,55 @@ class CallableTool(Entity):
             callable_text=source
         )
 
-    @model_validator(mode='after')
-    def validate_schemas_and_callable(self) -> Self:
-        """Validates the tool's schemas and ensures its callable is registered."""
+    @model_validator(mode='before')
+    def validate_schemas_and_callable(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validates the tool's schemas and ensures its callable is registered. Must run before entity registration."""
+        # Ensure we have a valid name
+        name = data.get('name')
+        if not isinstance(name, str):
+            raise ValueError("Tool name must be a string")
+            
         # Get or register the function
-        func_name, func = self._get_or_register_function(
-            name=self.name,
-            callable_text=self.callable_text
+        func_name, func = cls._get_or_register_function(
+            name=name,
+            callable_text=data.get('callable_text')
         )
         
         # Store text representation if not provided
-        if not self.callable_text:
+        if not data.get('callable_text'):
             try:
-                self.callable_text = inspect.getsource(func)
+                data['callable_text'] = inspect.getsource(func)
             except (TypeError, OSError):
-                self.callable_text = str(func)
+                data['callable_text'] = str(func)
         
-        # Derive and validate schemas
-        derived_input = derive_input_schema(func)
-        derived_output = derive_output_schema(func)
+        # Check if function is already registered
+        registry = CallableRegistry
+        existing_info = registry.get_info(name)
         
-        # Validate and set input schema
-        if self.input_schema:
-            validate_schema_compatibility(derived_input, self.input_schema)
+        if existing_info:
+            # Function exists, preserve its schemas
+            if not data.get('input_schema'):
+                data['input_schema'] = existing_info.input_schema
+            if not data.get('output_schema'):
+                data['output_schema'] = existing_info.output_schema
         else:
-            self.input_schema = derived_input
+            # New function, derive and validate schemas
+            derived_input = derive_input_schema(func)
+            derived_output = derive_output_schema(func)
             
-        # Validate and set output schema
-        if self.output_schema:
-            validate_schema_compatibility(derived_output, self.output_schema)
-        else:
-            self.output_schema = derived_output
+            # Validate and set input schema
+            if data.get('input_schema'):
+                validate_schema_compatibility(derived_input, data['input_schema'])
+            else:
+                data['input_schema'] = derived_input
+                
+            # Validate and set output schema
+            if data.get('output_schema'):
+                validate_schema_compatibility(derived_output, data['output_schema'])
+            else:
+                data['output_schema'] = derived_output
             
-        return self
+        return data
     
     def _custom_serialize(self) -> Dict[str, Any]:
         """Serialize the callable-specific data."""
@@ -362,6 +378,19 @@ class CallableTool(Entity):
             )
         return None
         
+    def fork(self: T_Self, **kwargs: Any) -> T_Self:
+        """
+        Override fork to preserve schemas when creating new versions.
+        """
+        # Preserve schemas if not explicitly changed
+        if 'input_schema' not in kwargs:
+            kwargs['input_schema'] = self.input_schema
+        if 'output_schema' not in kwargs:
+            kwargs['output_schema'] = self.output_schema
+            
+        # Call parent fork with preserved schemas
+        return super().fork(**kwargs)
+
 class StructuredTool(Entity):
     """
     Entity representing a tool for structured output with schema validation and LLM integration.
@@ -518,6 +547,18 @@ class StructuredTool(Entity):
             instruction_string=instruction_string or cls.model_fields["instruction_string"].default,
             strict_schema=strict_schema
         )
+
+    @model_validator(mode='before')
+    def validate_history(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-validate to ensure history contains proper ChatMessage objects"""
+        if 'history' in values and isinstance(values['history'], list):
+            history = []
+            for msg in values['history']:
+                if isinstance(msg, dict):
+                    msg = ChatMessage.model_validate(msg)
+                history.append(msg)
+            values['history'] = history
+        return values
 
 class LLMClient(str, Enum):
     openai = "openai"
@@ -1336,22 +1377,20 @@ class ChatThread(Entity):
 
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        if not self.new_message and self.llm_config.response_format != ResponseFormat.auto_tools and self.llm_config.response_format != ResponseFormat.workflow:
+        if not self.new_message and self.llm_config.response_format not in [ResponseFormat.auto_tools, ResponseFormat.workflow]:
             raise ValueError("Cannot add user message - no new message content")
-        elif not self.new_message and self.llm_config.response_format == ResponseFormat.auto_tools:
-            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in auto_tools mode")
+        elif not self.new_message:
+            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) - in {self.llm_config.response_format} mode")
             return None
-        elif not self.new_message and self.llm_config.response_format == ResponseFormat.workflow:
-            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in workflow mode")
-            return None
-        assert self.new_message is not None, "Cannot add user message - no new message content"
+
         user_message = ChatMessage(
             role=MessageRole.user,
             content=self.new_message,
+            chat_thread_uuid=self.id,
             parent_message_uuid=self.history[-1].id if self.history else None
         )
         self.history.append(user_message)
-        EntityRegistry._logger.info(f"Added user message({user_message.id}) to ChatThread({self.id})")
+        EntityRegistry._logger.debug(f"Added user message to ChatThread({self.id})")  # Add debug log
         self.new_message = None
         return user_message
 
@@ -1480,6 +1519,18 @@ class ChatThread(Entity):
             if message.role == MessageRole.assistant and message.usage:
                 usages.append(message.usage)
         return usages
+
+    @model_validator(mode='before')
+    def validate_history(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-validate to ensure history contains proper ChatMessage objects"""
+        if 'history' in values and isinstance(values['history'], list):
+            history = []
+            for msg in values['history']:
+                if isinstance(msg, dict):
+                    msg = ChatMessage.model_validate(msg)
+                history.append(msg)
+            values['history'] = history
+        return values
 
 
 

@@ -2,7 +2,15 @@ from pydantic import BaseModel, Field
 from minference.entity import Entity, EntityRegistry, entity_uuid_expander, entity_uuid_expander_list
 from typing import List, Union
 from uuid import UUID
+import logging
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Clear any existing state
 registry = EntityRegistry()
 EntityRegistry.clear()
 EntityRegistry.clear_logs()
@@ -10,55 +18,35 @@ EntityRegistry.clear_logs()
 class MyEntity(Entity):
     some_data: str = "initial"
 
-# Create and register root entity
-root = MyEntity(some_data="Hello")
+def print_entity_info(entity: MyEntity, prefix: str = "") -> None:
+    """Helper function to print entity information"""
+    print(f"{prefix}Entity ID: {entity.id}")
+    print(f"{prefix}Lineage ID: {entity.lineage_id}")
+    print(f"{prefix}Parent ID: {entity.parent_id}")
+    print(f"{prefix}Data: {entity.some_data}")
+    print()
 
-# Modify and register changes
-root.some_data = "Changed"
+print("=== Creating root entity (v1) ===")
+root = MyEntity(some_data="v1")
+print_entity_info(root)
 
-@entity_uuid_expander
-def single_func(e: MyEntity) -> None:
-    print("single_func => got entity", e.id, e.some_data)
-    e.some_data = "modified in single_func"
-      # This should be depth 2
+print("=== Creating second version (v2) ===")
+v2 = root.fork(some_data="v2")
+print_entity_info(v2)
 
-# Call single_func with the root entity
-single_func(root)
+print("=== Creating third version (v3) ===")
+v3 = v2.fork(some_data="v3")
+print_entity_info(v3)
 
-@entity_uuid_expander_list("items")
-async def run_parallel_ai_completion(orchestrator: str, items: List[MyEntity]) -> List[str]:
-    out = []
-    for x in items:  # items will already be MyEntity instances
-        out.append(f"Processed {x.id} - {x.some_data}")
-        x.some_data = f"modified by {orchestrator}"
-    return out
+print("\n=== Final Registry Status ===")
+status = EntityRegistry.get_registry_status()
+print(f"Total entities: {status['total_items']}")
+print(f"Total lineages: {status['total_lineages']}")
+print(f"Total versions: {status['total_versions']}")
 
-# Create test entities
-entities = [MyEntity(some_data=f"test_{i}") for i in range(3)]
+print("\n=== Lineage Tree ===")
+print(EntityRegistry.get_lineage_tree_sorted(root.lineage_id))
 
-
-# Demo both ways of calling the decorated function
-import asyncio
-
-async def run_demo():
-    # Call with List[Entity]
-    results1 = await run_parallel_ai_completion("demo1", items=entities)
-    print("\nResults with entities:", results1)
-    
-    # Call with List[UUID]
-    entity_ids = [e.id for e in entities]
-    results2 = await run_parallel_ai_completion("demo2", items=entity_ids)
-    print("\nResults with UUIDs:", results2)
-    
-    # Show final registry state
-    print("\nFinal registry status:")
-    print(EntityRegistry.get_registry_status())
-    
-    # Print mermaid diagrams for both root and first test entity
-    print("\nRoot entity lineage (Mermaid):")
-    print(EntityRegistry.get_lineage_tree_sorted(root.lineage_id))
-    
-    print("\nTest entity lineage (Mermaid):")
-    print(EntityRegistry.get_lineage_tree_sorted(entities[0].lineage_id))
-
-asyncio.run(run_demo())
+# Exit immediately to prevent running old test code
+import sys
+sys.exit(0)

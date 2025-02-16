@@ -9,6 +9,7 @@ from typing import (
 from uuid import UUID, uuid4
 from datetime import datetime
 from pathlib import Path
+from functools import wraps
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -140,22 +141,72 @@ class Entity(BaseModel):
         from __main__ import EntityRegistry
         return EntityRegistry.get_many(entity_ids, expected_type=cls)
 
-    def fork(self: T_Self, **kwargs: Any) -> T_Self:
-        """
-        Create a new copy of this entity with updated fields.
-        A new id is generated and the parent's id is recorded.
-        """
-        version_fields = {
-            "parent_id": self.id,
-            "id": uuid4(),
-            "created_at": datetime.utcnow()
-        }
-        version_fields.update(kwargs)
-        temp_copy = self.model_copy(update=version_fields)
-        data = temp_copy.model_dump()
-        new_entity = self.__class__.model_validate(data)
-        # The new entity will auto-register via its validator.
-        return new_entity
+    def fork(self, **kwargs) -> Self:
+        """Create a new version of this entity with optional data modifications."""
+        # Get all fields except version-specific ones
+        fields = self.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+        
+        # For lists (like history), create deep copies
+        for field_name, value in fields.items():
+            if isinstance(value, list):
+                fields[field_name] = value.copy()
+        
+        # Update fields with any provided modifications
+        fields.update(kwargs)
+        
+        # Create new version with copied fields and modifications
+        new_version = self.__class__(**fields)
+        new_version.parent_id = self.id
+        new_version.lineage_id = self.lineage_id
+        
+        return new_version
+
+    def model_dump(self, *args, **kwargs) -> Dict[str, Any]:
+        """Override model_dump to handle nested entities for comparison"""
+        exclude_keys = kwargs.get('exclude', set())
+        exclude_keys = exclude_keys.union({'id', 'created_at', 'lineage_id', 'parent_id'})
+        kwargs['exclude'] = exclude_keys
+        
+        # Get base dump
+        data = super().model_dump(*args, **kwargs)
+        
+        # Convert any nested entities to their IDs for comparison
+        for key, value in data.items():
+            if isinstance(value, list):
+                data[key] = [item.id if isinstance(item, Entity) else item for item in value]
+            elif isinstance(value, Entity):
+                data[key] = value.id
+                
+        return data
+
+    @classmethod
+    def compare_entities(cls, entity1: 'Entity', entity2: Dict[str, Any]) -> bool:
+        """Compare an entity with a snapshot dictionary."""
+        # Get current entity's data excluding version fields
+        exclude_fields = {'id', 'created_at', 'lineage_id', 'parent_id', 'new_message'}
+        data1 = entity1.model_dump(exclude=exclude_fields)
+        
+        # Compare field by field
+        all_keys = set(data1.keys()) | set(entity2.keys()) - {'new_message'}
+        for key in all_keys:
+            val1 = data1.get(key)
+            val2 = entity2.get(key)
+            
+            # Handle lists
+            if isinstance(val1, list) and isinstance(val2, list):
+                if len(val1) != len(val2):
+                    return False
+                for i, (item1, item2) in enumerate(zip(val1, val2)):
+                    if isinstance(item1, dict) and isinstance(item2, dict):
+                        if item1 != item2:
+                            return False
+                    elif item1 != item2:
+                        return False
+            # Handle regular values
+            elif val1 != val2:
+                return False
+                
+        return True
 
 ########################################
 # 3) Snapshot-based EntityRegistry
@@ -185,71 +236,62 @@ class EntityRegistry(BaseRegistry[EType]):
 
     @classmethod
     def register(cls, entity: Union[EType, UUID]) -> Optional[EType]:
-        """
-        Register an entity or, if a UUID is passed in, return the associated entity.
+        """Register an entity or retrieve by UUID."""
         
-        If the entity's non-unique fields have changed since the last registration,
-        a new version is forked from the working object. The working object's __dict__
-        is updated to reflect the new version. This ensures a linear chain of versions.
-        """
-        # If a UUID is passed in, simply retrieve the entity.
         if isinstance(entity, UUID):
             return cls.get(entity)
+            
         if not isinstance(entity, BaseModel):
-            cls._logger.error(f"Invalid entity type: {type(entity)}")
             raise ValueError("Entity must be a Pydantic model instance")
-        if not hasattr(entity, 'id'):
-            cls._logger.error(f"Entity missing ID field: {type(entity)}")
-            raise ValueError("Entity must have an 'id' field")
-
+            
         ent_id = entity.id
-        cls._logger.debug(f"Registering {entity.__class__.__name__}({ent_id})")
-        exclude_keys = {'id', 'created_at', 'lineage_id', 'parent_id'}
-        new_data = entity.model_dump(exclude=exclude_keys)
 
-        # First registration.
+        # First registration
         if ent_id not in cls._snapshots:
-            cls._snapshots[ent_id] = new_data
+            snapshot = entity.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+            cls._snapshots[ent_id] = snapshot
             cls._registry[ent_id] = entity
             cls._timestamps[ent_id] = datetime.utcnow()
-            cls._logger.info(f"Registered new {entity.__class__.__name__}({ent_id})")
+            
+            # Track lineage for new entity
             if hasattr(entity, 'lineage_id'):
-                lineage_val = getattr(entity, 'lineage_id')
-                if isinstance(lineage_val, UUID):
-                    cls._lineages.setdefault(lineage_val, []).append(ent_id)
+                lineage_id = entity.lineage_id
+                if ent_id not in cls._lineages.get(lineage_id, []):
+                    cls._lineages.setdefault(lineage_id, []).append(ent_id)
             return entity
 
-        # Compare snapshot.
-        old_data = cls._snapshots[ent_id]
-        if old_data == new_data:
-            cls._logger.debug(f"{entity.__class__.__name__}({ent_id}) unchanged.")
-            return entity
+        # Get existing entity
+        existing = cls._registry[ent_id]
+        snapshot = cls._snapshots[ent_id]
 
-        # Detect and log specific changes
-        changes = []
-        for key in set(old_data.keys()) | set(new_data.keys()):
-            old_val = old_data.get(key)
-            new_val = new_data.get(key)
-            if old_val != new_val:
-                changes.append(f"{key}: {old_val!r} -> {new_val!r}")
+        # Compare with snapshot
+        is_same = Entity.compare_entities(entity, snapshot)
+        
+        if is_same:
+            return existing
 
-        cls._logger.info(
-            f"Detected changes in {entity.__class__.__name__}({ent_id}); forking new version.\n"
-            f"Changes detected:\n" + "\n".join(f"  - {change}" for change in changes)
-        )
-        changed_kwargs = {k: newval for k, newval in new_data.items() if newval != old_data.get(k)}
-        new_entity = entity.fork(**changed_kwargs)
-        new_id = new_entity.id
-        cls._registry[new_id] = new_entity
-        cls._timestamps[new_id] = datetime.utcnow()
-        cls._snapshots[new_id] = new_entity.model_dump(exclude=exclude_keys)
-        if hasattr(new_entity, 'lineage_id'):
-            lineage_val = getattr(new_entity, 'lineage_id')
-            cls._lineages.setdefault(lineage_val, []).append(new_id)
-        cls._logger.info(f"Created new version: {new_entity.__class__.__name__}({new_id})")
-        # Update the working object's state (in-place) to match the new version.
-        entity.__dict__.update(new_entity.__dict__)
-        return entity
+        # Create new version with proper lineage
+        new_version = entity.fork()
+        new_snapshot = new_version.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+        
+        # Store new version
+        cls._snapshots[new_version.id] = new_snapshot
+        cls._registry[new_version.id] = new_version
+        cls._timestamps[new_version.id] = datetime.utcnow()
+        
+        # Update lineage - ensure we only add once and maintain proper chain
+        if hasattr(new_version, 'lineage_id'):
+            lineage_id = new_version.lineage_id
+            lineage = cls._lineages.setdefault(lineage_id, [])
+            if new_version.id not in lineage:
+                # Find the latest version in this lineage
+                latest_version_id = lineage[-1] if lineage else None
+                if latest_version_id:
+                    # Set parent to latest version
+                    new_version.parent_id = latest_version_id
+                lineage.append(new_version.id)
+                
+        return new_version
 
     @classmethod
     def get(cls, entity_id: UUID, expected_type: Optional[Type[EType]] = None) -> Optional[EType]:
@@ -317,18 +359,47 @@ class EntityRegistry(BaseRegistry[EType]):
         tree = cls.build_lineage_tree(lineage_id)
         if not tree:
             return "No lineage found"
+        
+        # Sort items by creation time to show progression
         sorted_items = sorted(tree.items(), key=lambda kv: kv[1]["created_at"])
+        
         mermaid = ["graph TD"]
-        for vid, node in sorted_items:
+        
+        # First add all nodes with their diffs
+        for i, (vid, node) in enumerate(sorted_items):
             entity = node["entity"]
-            if hasattr(entity, 'some_data'):
-                label = f"{str(vid)[:8]}[{entity.some_data}]"
+            if i > 0:  # Skip first node as it has no parent to compare with
+                parent_id = node["parent_id"]
+                if parent_id:
+                    parent = cls.get(parent_id)
+                    if parent:
+                        # Compare with parent to find differences
+                        parent_snapshot = parent.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+                        current_snapshot = entity.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+                        
+                        # Find what changed
+                        changes = []
+                        for key in current_snapshot:
+                            if key in parent_snapshot:
+                                if isinstance(current_snapshot[key], list):
+                                    if len(current_snapshot[key]) != len(parent_snapshot[key]):
+                                        changes.append(f"{key}: {len(parent_snapshot[key])}→{len(current_snapshot[key])}")
+                                elif current_snapshot[key] != parent_snapshot[key]:
+                                    changes.append(f"{key}: {parent_snapshot[key]}→{current_snapshot[key]}")
+                        
+                        change_str = "<br/>" + "<br/>".join(changes) if changes else ""
+                        mermaid.append(f"    {str(vid)}[{type(entity).__name__}{change_str}]")
+                    else:
+                        mermaid.append(f"    {str(vid)}[{type(entity).__name__}]")
             else:
-                label = f"{str(vid)[:8]}[{type(entity).__name__}]"
-            mermaid.append(f"    {str(vid)[:8]}{label}")
-        for vid, node in tree.items():
+                # First node
+                mermaid.append(f"    {str(vid)}[{type(entity).__name__}]")
+        
+        # Then add edges based on parent relationships
+        for vid, node in sorted_items:
             if node["parent_id"]:
-                mermaid.append(f"    {str(node['parent_id'])[:8]} --> {str(vid)[:8]}")
+                mermaid.append(f"    {str(node['parent_id'])} --> {str(vid)}")
+        
         return "\n".join(mermaid)
 
     @classmethod
@@ -371,29 +442,55 @@ T_dec = TypeVar("T_dec")
 PS = ParamSpec("PS")
 RT = TypeVar("RT")
 
-def entity_uuid_expander(func: Callable[[T_Entity], RT]) -> Callable[[Union[UUID, T_Entity]], RT]:
-    """
-    Decorator for functions that accept a single entity (or UUID).
-    
-    It simply calls EntityRegistry.register() on the input before and after
-    executing the function, so that the working object's state is updated.
-    """
-    @functools.wraps(func)
-    def wrapper(x: Union[UUID, T_Entity]) -> RT:
-        from __main__ import EntityRegistry
-        # If x is a UUID, convert it.
-        if isinstance(x, UUID):
-            entity : Union[T_Entity, None] = EntityRegistry.get(x)
-            if entity is None:
-                raise ValueError(f"No entity found for UUID: {x}")
-        else:
-            entity = x
-        # Call register to update the working object.
-        EntityRegistry.register(entity)
-        result = func(entity)
-        EntityRegistry.register(entity)
-        return result
-    return wrapper
+def entity_uuid_expander(param_name: str):
+    """Decorator to handle entity UUID expansion and versioning."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Get the entity from args or kwargs
+            entity = kwargs.get(param_name)
+            if entity is None and len(args) > 0:
+                entity = args[0]
+            
+            if not isinstance(entity, Entity):
+                raise ValueError(f"Parameter {param_name} must be an Entity instance")
+
+            # Get latest version from registry
+            latest = EntityRegistry.get(entity.id)
+            if latest and latest.id != entity.id:
+                # Update args or kwargs with latest version
+                if param_name in kwargs:
+                    kwargs[param_name] = latest
+                else:
+                    args = list(args)
+                    args[0] = latest
+                    args = tuple(args)
+
+            # Call the original function
+            result = await func(*args, **kwargs)
+
+            # After function call, check if entity was modified
+            current = EntityRegistry.get(latest.id if latest else entity.id)
+            if current:
+                # Get the snapshot of the original entity for comparison
+                original_snapshot = entity.model_dump(exclude={'id', 'created_at', 'lineage_id', 'parent_id'})
+                
+                # Compare current entity with original snapshot
+                if not Entity.compare_entities(current, original_snapshot):
+                    # Create new version with current as parent
+                    new_version = current.fork()
+                    new_version.parent_id = current.id
+                    
+                    # Register new version
+                    EntityRegistry.register(new_version)
+                    
+                    # Update result if it's the modified entity
+                    if result == current:
+                        result = new_version
+
+            return result
+        return wrapper
+    return decorator
 
 def entity_uuid_expander_list_sync(param_name: str) -> Callable[[Callable[PS, RT]], Callable[PS, RT]]:
     """

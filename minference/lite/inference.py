@@ -55,41 +55,114 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
     """Create a hashmap of chat threads by their IDs."""
     return {p.id: p for p in chat_threads if p.id is not None}
 
+@entity_uuid_expander_list("chat_threads")
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
-    chat_thread_hashmap = create_chat_thread_hashmap(chat_threads)
+    # Track thread ID mappings (original -> latest)
+    thread_id_mappings = {}
     history_update_tasks = []
+    
+    EntityRegistry._logger.info("""
+=================================================================
+                    START PROCESSING OUTPUTS 
+=================================================================
+""")
     
     for output in llm_outputs:
         if output.chat_thread_id:
             try:
-                chat_thread = chat_thread_hashmap[output.chat_thread_id]
+                # Get the latest version from registry
+                chat_thread = EntityRegistry.get(output.chat_thread_id)
+                if not chat_thread:
+                    EntityRegistry._logger.error(f"ChatThread({output.chat_thread_id}) not found in registry")
+                    continue
+                    
+                EntityRegistry._logger.info(f"""
+=== PROCESSING OUTPUT FOR CHAT THREAD ===
+Current Thread ID: {chat_thread.id}
+Current History Length: {len(chat_thread.history)}
+Current New Message: {chat_thread.new_message}
+Current Parent ID: {chat_thread.parent_id}
+Current Lineage ID: {chat_thread.lineage_id}
+=======================================
+""")
+                
+                # Add history and get potentially new version
                 history_update_tasks.append(
                     chat_thread.add_chat_turn_history(output)
                 )
                 EntityRegistry._logger.info(
-                    f"Queued history update for ChatThread({output.chat_thread_id})"
+                    f"Queued history update for ChatThread({chat_thread.id})"
                 )
             except Exception as e:
-                EntityRegistry._logger.error(
-                    f"Failed to queue history update for ChatThread({output.chat_thread_id}): {str(e)}"
-                )
+                EntityRegistry._logger.error(f"""
+=== ERROR PROCESSING CHAT THREAD ===
+Thread ID: {output.chat_thread_id}
+Error: {str(e)}
+Traceback: {e.__traceback__}
+===================================
+""")
     
     if history_update_tasks:
-        EntityRegistry._logger.info(f"Executing {len(history_update_tasks)} history updates in parallel")
+        EntityRegistry._logger.info(f"""
+=================================================================
+            EXECUTING {len(history_update_tasks)} HISTORY UPDATES 
+=================================================================
+""")
         try:
             results = await asyncio.gather(*history_update_tasks)
-            for chat_thread_id, (user_msg, assistant_msg) in zip(
-                [o.chat_thread_id for o in llm_outputs if o.chat_thread_id], 
+            
+            # Update outputs with new thread IDs if threads were forked
+            for output, (user_msg, assistant_msg) in zip(
+                [o for o in llm_outputs if o.chat_thread_id], 
                 results
             ):
-                EntityRegistry._logger.info(
-                    f"Updated ChatThread({chat_thread_id}): "
-                    f"Added user message({user_msg.id}) and assistant message({assistant_msg.id})"
-                )
-            EntityRegistry._logger.info("All history updates completed")
+                # Get the chat thread ID from the latest message
+                latest_thread_id = assistant_msg.chat_thread_uuid
+                original_thread_id = output.chat_thread_id
+                
+                # Get the latest thread state
+                latest_thread = EntityRegistry.get(latest_thread_id)
+                
+                EntityRegistry._logger.info(f"""
+=== HISTORY UPDATE RESULT ===
+Original Thread ID: {original_thread_id}
+Latest Thread ID: {latest_thread_id}
+User Message ID: {user_msg.id}
+Assistant Message ID: {assistant_msg.id}
+Latest Thread History Length: {len(latest_thread.history) if latest_thread else 'N/A'}
+Latest Thread Parent: {latest_thread.parent_id if latest_thread else 'N/A'}
+============================
+""")
+                
+                if latest_thread_id != output.chat_thread_id:
+                    EntityRegistry._logger.info(f"""
+=== UPDATING OUTPUT THREAD ID ===
+Old Thread ID: {output.chat_thread_id}
+New Thread ID: {latest_thread_id}
+===============================
+""")
+                    output.chat_thread_id = latest_thread_id
+                
+            # Log the final lineage state
+            if results and results[0] and results[0][1]:
+                first_thread = EntityRegistry.get(results[0][1].chat_thread_uuid)
+                if first_thread:
+                    EntityRegistry._logger.info(f"""
+=== FINAL LINEAGE STATE ===
+Lineage ID: {first_thread.lineage_id}
+Lineage Tree:
+{EntityRegistry.get_lineage_tree_sorted(first_thread.lineage_id)}
+=========================
+""")
+            
         except Exception as e:
-            EntityRegistry._logger.error(f"Error during parallel history updates: {str(e)}")
+            EntityRegistry._logger.error(f"""
+=== ERROR DURING HISTORY UPDATES ===
+Error: {str(e)}
+Traceback: {e.__traceback__}
+==================================
+""")
     
     return llm_outputs
 
@@ -100,11 +173,19 @@ async def run_parallel_ai_completion(
 ) -> List[ProcessedOutput]:
     """Run parallel AI completion for multiple chat threads."""
     EntityRegistry._logger.info(f"Starting parallel AI completion for {len(chat_threads)} chat threads")
+    
+    # Track original to forked thread mappings
+    thread_mappings = {}
+    
     # First add user messages to all chat threads
     for chat in chat_threads:
         try:
             EntityRegistry._logger.info(f"Adding user message to ChatThread({chat.id})")
-            chat.add_user_message()
+            original_id = chat.id
+            result = chat.add_user_message()
+            if result and chat.id != original_id:  # If thread was forked
+                thread_mappings[original_id] = chat.id
+                EntityRegistry._logger.info(f"ChatThread forked: {original_id} -> {chat.id}")
         except Exception as e:
             if chat.llm_config.response_format != ResponseFormat.auto_tools or chat.llm_config.response_format != ResponseFormat.workflow:
                 chat_threads.remove(chat)
@@ -125,6 +206,12 @@ async def run_parallel_ai_completion(
 
     results = await asyncio.gather(*tasks)
     llm_outputs = [item for sublist in results for item in sublist]
+    
+    # Update chat thread IDs in outputs based on mappings
+    for output in llm_outputs:
+        if output.chat_thread_id in thread_mappings:
+            output.chat_thread_id = thread_mappings[output.chat_thread_id]
+            EntityRegistry._logger.info(f"Updated output chat_thread_id to forked version: {output.chat_thread_id}")
     
     EntityRegistry._logger.info(f"Processing {len(llm_outputs)} LLM outputs")
     processed_outputs = await process_outputs_and_execute_tools(chat_threads, llm_outputs)
