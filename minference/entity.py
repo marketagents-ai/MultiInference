@@ -172,6 +172,30 @@ class Entity(BaseModel):
         from __main__ import EntityRegistry
         return EntityRegistry.get_many(entity_ids, expected_type=cls)
 
+    def fork(self: T_Self, **kwargs: Any) -> T_Self:
+        """
+        Create a new copy of this entity with optional field updates.
+        The new copy is automatically registered with a new ID and lineage tracking.
+        """
+        # Merge user kwargs with required version tracking fields
+        version_fields = {
+            "parent_id": self.id,
+            "id": uuid4(),
+            "created_at": datetime.utcnow()
+        }
+        # User kwargs take precedence over version fields if provided
+        version_fields.update(kwargs)
+        
+        # Create copy with all fields at once
+        temp_copy = self.model_copy(update=version_fields, deep=True)
+        
+        # Dump to dict and validate through a new instance
+        data = temp_copy.model_dump()
+        new_entity = self.__class__.model_validate(data)
+        
+        # Registration happens automatically via validator
+        return new_entity
+
 
 ########################################
 # 3) Snapshot-based EntityRegistry
