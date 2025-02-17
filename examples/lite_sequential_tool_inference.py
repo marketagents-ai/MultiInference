@@ -225,5 +225,7 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     print(EntityRegistry.list_by_type(ChatMessage))
+    threads = EntityRegistry.list_by_type(ChatThread)
+    print(EntityRegistry.get_lineage_mermaid(threads[0].lineage_id))
 
 

@@ -55,11 +55,11 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
     """Create a hashmap of chat threads by their IDs."""
     return {p.id: p for p in chat_threads if p.id is not None}
 
-@entity_uuid_expander_list("chat_threads")
+# @entity_uuid_expander_list("chat_threads")
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
-    thread_id_mappings = {}
+    thread_id_mappings = {chat_thread.id: chat_thread for chat_thread in chat_threads}
     history_update_tasks = []
     
     EntityRegistry._logger.info("""
@@ -72,9 +72,9 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
         if output.chat_thread_id:
             try:
                 # Get the latest version from registry
-                chat_thread = EntityRegistry.get(output.chat_thread_id)
+                chat_thread = thread_id_mappings.get(output.chat_thread_id,None)
                 if not chat_thread:
-                    EntityRegistry._logger.error(f"ChatThread({output.chat_thread_id}) not found in registry")
+                    EntityRegistry._logger.error(f"ChatThread({output.chat_thread_id}) not found in temporary thread_id_mappings")
                     continue
                     
                 EntityRegistry._logger.info(f"""
@@ -183,9 +183,7 @@ async def run_parallel_ai_completion(
             EntityRegistry._logger.info(f"Adding user message to ChatThread({chat.id})")
             original_id = chat.id
             result = chat.add_user_message()
-            if result and chat.id != original_id:  # If thread was forked
-                thread_mappings[original_id] = chat.id
-                EntityRegistry._logger.info(f"ChatThread forked: {original_id} -> {chat.id}")
+           
         except Exception as e:
             if chat.llm_config.response_format != ResponseFormat.auto_tools or chat.llm_config.response_format != ResponseFormat.workflow:
                 chat_threads.remove(chat)

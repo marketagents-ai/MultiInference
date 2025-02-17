@@ -94,14 +94,13 @@ class Entity(BaseModel):
         return data
 
     def has_modifications(self, other: 'Entity') -> bool:
-        """
-        Compare this entity with another entity directly.
-        Returns True if there are any differences in fields (excluding version fields).
-        """
+        """Compare this entity with another entity directly."""
+        EntityRegistry._logger.debug(f"Checking modifications between entities {self.id} and {other.id}")
         self_fields = set(self.model_fields.keys()) - {'id', 'created_at', 'parent_id'}
         other_fields = set(other.model_fields.keys()) - {'id', 'created_at', 'parent_id'}
 
         if self_fields != other_fields:
+            EntityRegistry._logger.debug(f"Field set mismatch between entities {self.id} and {other.id}")
             return True
 
         for field_name in self_fields:
@@ -110,26 +109,30 @@ class Entity(BaseModel):
 
             if isinstance(self_value, Entity) and isinstance(other_value, Entity):
                 if self_value.has_modifications(other_value):
+                    EntityRegistry._logger.debug(f"Nested entity modification detected in field {field_name}")
                     return True
             elif isinstance(self_value, (list, tuple, set)) and isinstance(other_value, (list, tuple, set)):
                 if len(self_value) != len(other_value):
+                    EntityRegistry._logger.debug(f"List length mismatch in field {field_name}")
                     return True
                 for self_item, other_item in zip(self_value, other_value):
                     if isinstance(self_item, Entity) and isinstance(other_item, Entity):
                         if self_item.has_modifications(other_item):
+                            EntityRegistry._logger.debug(f"List item modification detected in field {field_name}")
                             return True
                     elif self_item != other_item:
+                        EntityRegistry._logger.debug(f"List item value mismatch in field {field_name}")
                         return True
             elif self_value != other_value:
+                EntityRegistry._logger.debug(f"Value mismatch in field {field_name}")
                 return True
 
+        EntityRegistry._logger.debug(f"No modifications detected between entities {self.id} and {other.id}")
         return False
 
     def compute_diff(self, other: 'Entity') -> EntityDiff:
-        """
-        Compute detailed differences between this entity and another.
-        Returns structured diff for debugging/logging.
-        """
+        """Compute detailed differences between this entity and another."""
+        EntityRegistry._logger.debug(f"Computing diff between entities {self.id} and {other.id}")
         diff = EntityDiff()
         
         self_fields = set(self.model_fields.keys()) - {'id', 'created_at', 'parent_id'}
@@ -137,8 +140,10 @@ class Entity(BaseModel):
         
         # Find added/removed fields
         for field in self_fields - other_fields:
+            EntityRegistry._logger.debug(f"Field {field} added")
             diff.add_diff(field, "added", new_value=getattr(self, field))
         for field in other_fields - self_fields:
+            EntityRegistry._logger.debug(f"Field {field} removed")
             diff.add_diff(field, "removed", old_value=getattr(other, field))
         
         # Compare common fields
@@ -149,12 +154,14 @@ class Entity(BaseModel):
             if isinstance(self_value, Entity) and isinstance(other_value, Entity):
                 nested_diff = self_value.compute_diff(other_value)
                 if nested_diff.field_diffs:
+                    EntityRegistry._logger.debug(f"Nested entity modifications in field {field}")
                     diff.add_diff(field, "entity_modified", 
                                 old_value=other_value.id,
                                 new_value={"entity_id": self_value.id, "changes": nested_diff.field_diffs})
             
             elif isinstance(self_value, (list, tuple, set)) and isinstance(other_value, (list, tuple, set)):
                 if len(self_value) != len(other_value):
+                    EntityRegistry._logger.debug(f"List length change in field {field}")
                     diff.add_diff(field, "list_modified",
                                 old_value={"length": len(other_value), "items": other_value},
                                 new_value={"length": len(self_value), "items": self_value})
@@ -164,12 +171,14 @@ class Entity(BaseModel):
                         if isinstance(self_item, Entity) and isinstance(other_item, Entity):
                             item_diff = self_item.compute_diff(other_item)
                             if item_diff.field_diffs:
+                                EntityRegistry._logger.debug(f"List item modification at index {idx} in field {field}")
                                 list_changes.append({
                                     "index": idx,
                                     "type": "entity_modified",
                                     "changes": item_diff.field_diffs
                                 })
                         elif self_item != other_item:
+                            EntityRegistry._logger.debug(f"List item value change at index {idx} in field {field}")
                             list_changes.append({
                                 "index": idx,
                                 "type": "modified",
@@ -182,54 +191,44 @@ class Entity(BaseModel):
                                     new_value={"length": len(self_value), "changes": list_changes})
             
             elif self_value != other_value:
+                EntityRegistry._logger.debug(f"Field {field} modified")
                 diff.add_diff(field, "modified", old_value=other_value, new_value=self_value)
         
         return diff
 
     def fork(self, force: bool = False, **kwargs) -> Self:
-        """
-        Create new version of entity with modifications.
-        Modifies current entity in place and creates new snapshot.
+        EntityRegistry._logger.debug(f"Fork called on entity {self.id} (force={force}, modifications={kwargs})")
         
-        Args:
-            force: If True, creates a new version even if there are no modifications
-            **kwargs: Modifications to apply to the entity
-        
-        Returns:
-            Self: The entity itself (either modified or unchanged)
-        """
-        # If no modifications and not forced, return unchanged
-        if not kwargs and not force:
-            return self
-            
-        # Get cold snapshot to check for modifications
+        # Retrieve cold snapshot to compare modifications.
         cold_snapshot = EntityRegistry.get_cold_snapshot(self.id)
         if cold_snapshot is None:
-            # Not registered yet, register as is
+            EntityRegistry._logger.debug(f"No cold snapshot found - registering new entity {self.id}")
             EntityRegistry.register(self)
             return self
-            
-        # Apply modifications if any
+
+        # Apply kwargs modifications if any.
         if kwargs:
+            EntityRegistry._logger.debug(f"Applying modifications to entity {self.id}: {kwargs}")
             for key, value in kwargs.items():
                 setattr(self, key, value)
         
-        # Check if actually modified
+        # Now check for modifications (this covers both external changes and kwargs)
         if not force and not self.has_modifications(cold_snapshot):
-            # No actual modifications, revert any temporary changes
-            for key, value in kwargs.items():
-                setattr(self, key, getattr(cold_snapshot, key))
+            EntityRegistry._logger.debug(f"No actual modifications and not forced - returning entity {self.id}")
             return self
-            
-        # Create new version
+        
+        # Create new version since modifications exist.
         old_id = self.id
         self.id = uuid4()
         self.parent_id = old_id
+        EntityRegistry._logger.debug(f"Creating new version: {old_id} -> {self.id}")
         
-        # Store new version
+        # Register the new version.
         EntityRegistry.register(self)
         
+        EntityRegistry._logger.debug(f"Fork complete: created new version {self.id} from {old_id}")
         return self
+
 
     @model_validator(mode='after')
     def register_entity(self) -> Self:
@@ -332,28 +331,41 @@ class EntityRegistry(BaseRegistry[EType]):
     @classmethod
     def register(cls, entity: Union[EType, UUID]) -> Optional[EType]:
         """Register an entity or retrieve by UUID."""
+        cls._logger.debug(f"Registering entity: {entity}")
+        
         if isinstance(entity, UUID):
+            cls._logger.debug(f"Entity is UUID, retrieving from registry: {entity}")
             return cls.get(entity)
             
         if not isinstance(entity, BaseModel):
-            raise ValueError("Entity must be a Pydantic model instance")
+            msg = f"Entity must be a Pydantic model instance, got {type(entity)}"
+            cls._logger.error(msg)
+            raise ValueError(msg)
             
         ent_id = entity.id
+        cls._logger.debug(f"Processing entity with ID: {ent_id}")
 
         # First registration - create cold snapshot
         if ent_id not in cls._registry:
+            cls._logger.debug(f"First registration for entity {ent_id}, creating cold snapshot")
             cls._store_cold_snapshot(entity)
+            cls._logger.debug(f"Cold snapshot created for entity {ent_id}")
             return entity
 
         # Get existing cold snapshot
         cold_snapshot = cls._registry[ent_id]
+        cls._logger.debug(f"Retrieved existing cold snapshot for entity {ent_id}")
         
-        # Return entity if no modifications
-        if not entity.has_modifications(cold_snapshot):
+        # Check for modifications and fork if needed
+        if entity.has_modifications(cold_snapshot):
+            cls._logger.debug(f"Entity {ent_id} has modifications, creating new version via fork")
+            entity.fork()
+            print("FORKED ENTITY new id",entity.id)
+            cls._logger.debug(f"Created new version for entity {ent_id}")
             return entity
             
-        # Let fork handle versioning if modified
-        return entity.fork()
+        cls._logger.debug(f"No modifications detected for entity {ent_id}")
+        return entity
 
     @classmethod
     def get(cls, entity_id: UUID, expected_type: Optional[Type[EType]] = None) -> Optional[EType]:
@@ -422,12 +434,7 @@ class EntityRegistry(BaseRegistry[EType]):
 
     @classmethod
     def build_lineage_tree(cls, lineage_id: UUID) -> Dict[UUID, Dict[str, Any]]:
-        """
-        Builds a tree structure for a given lineage using cold snapshots.
-        Uses a graph traversal approach starting from the root node.
-        Returns a dictionary mapping entity IDs to their node information.
-        """
-        # Get all version IDs for validation
+        """Builds a tree structure for a given lineage using cold snapshots."""
         version_ids = cls._lineages.get(lineage_id, [])
         if not version_ids:
             cls._logger.info(f"No versions found for lineage {lineage_id}")
@@ -453,14 +460,18 @@ class EntityRegistry(BaseRegistry[EType]):
             """Recursively build the tree starting from a node."""
             entity = cls._registry.get(node_id)
             if not isinstance(entity, Entity):
+                cls._logger.warning(f"Invalid entity found in lineage: {node_id}")
                 return
                 
+            cls._logger.debug(f"Building subtree for node {node_id} at depth {depth}")
+            
             # Calculate diff from parent if not root
             diff_from_parent = None
             if entity.parent_id:
                 parent = cls._registry.get(entity.parent_id)
                 if parent and isinstance(parent, Entity):
                     diff_from_parent = entity.compute_diff(parent).field_diffs
+                    cls._logger.debug(f"Computed diff from parent {entity.parent_id}")
             
             # Add node to tree
             tree[node_id] = {
@@ -476,6 +487,7 @@ class EntityRegistry(BaseRegistry[EType]):
             # Add this node as child to parent
             if entity.parent_id and entity.parent_id in tree:
                 tree[entity.parent_id]["children"].append(node_id)
+                cls._logger.debug(f"Added {node_id} as child of {entity.parent_id}")
             
             # Find and process children
             for vid in version_ids:
@@ -483,10 +495,13 @@ class EntityRegistry(BaseRegistry[EType]):
                 if not isinstance(child, Entity):
                     continue
                 if child.parent_id == node_id:
+                    cls._logger.debug(f"Processing child {vid} of node {node_id}")
                     build_subtree(vid, depth + 1)
         
         # Build tree starting from root
+        cls._logger.info(f"Starting tree build from root {root_id}")
         build_subtree(root_id)
+        cls._logger.info(f"Completed tree build for lineage {lineage_id}")
         return tree
 
     @classmethod
@@ -562,12 +577,11 @@ class EntityRegistry(BaseRegistry[EType]):
 
     @classmethod
     def get_lineage_mermaid(cls, lineage_id: UUID) -> str:
-        """
-        Generate a Mermaid graph visualization of the lineage tree.
-        Shows the differences between versions using structured diffs.
-        """
+        """Generate a Mermaid graph visualization of the lineage tree."""
+        cls._logger.debug(f"Generating Mermaid diagram for lineage {lineage_id}")
         tree = cls.get_lineage_tree_sorted(lineage_id)
         if not tree or not tree["nodes"]:
+            cls._logger.warning(f"No data available for lineage {lineage_id}")
             return "```mermaid\ngraph TD\n  No data available\n```"
             
         mermaid_lines = ["```mermaid", "graph TD"]
@@ -662,7 +676,6 @@ class EntityRegistry(BaseRegistry[EType]):
         cls._registry.clear()
         cls._timestamps.clear()
         cls._lineages.clear()
-
 ########################################
 # 4) Decorators
 ########################################
@@ -683,26 +696,43 @@ def entity_uuid_expander(param_name: str):
         async def wrapper(*args, **kwargs):
             # Get the entity from args or kwargs
             entity = kwargs.get(param_name)
+            EntityRegistry._logger.debug(f"Wrapper called with entity: {entity}")
+            print(f"Wrapper called with entity: {entity}")
+            
             if entity is None and len(args) > 0:
                 entity = args[0]
+                EntityRegistry._logger.debug(f"Wrapper called with entity from args: {entity}")
+                print(f"Wrapper called with entity from args: {entity}")
             
             if not isinstance(entity, Entity):
-                raise ValueError(f"Parameter {param_name} must be an Entity instance")
+                msg = f"Parameter {param_name} must be an Entity instance"
+                EntityRegistry._logger.error(msg)
+                print(f"ERROR: {msg}")
+                raise ValueError(msg)
 
             # Get cold snapshot from registry
             cold_snapshot = EntityRegistry.get(entity.id)
+            EntityRegistry._logger.debug(f"Cold snapshot from registry for entity {entity.id}: {cold_snapshot}")
+            print(f"Cold snapshot from registry for entity {entity.id}: {cold_snapshot}")
+            
             if cold_snapshot is not None and entity.has_modifications(cold_snapshot):
-                # Entity has been modified, fork to create new version
+                EntityRegistry._logger.debug(f"Entity {entity.id} has modifications, creating new version via fork")
+                print(f"Entity {entity.id} has modifications, creating new version via fork - dio ladro")
                 entity.fork()
+                print("FORKED ENTITY new id",entity.id)
 
             # Call the original function
+            EntityRegistry._logger.debug(f"Calling {func.__name__} with entity {entity.id}")
+            print(f"Calling {func.__name__} with entity {entity.id}")
             result = await func(*args, **kwargs)
 
             # After function call, check if entity was modified
             cold_snapshot = EntityRegistry.get(entity.id)
             if cold_snapshot is not None and entity.has_modifications(cold_snapshot):
-                # Create new version via fork
+                EntityRegistry._logger.debug(f"Entity {entity.id} modified during {func.__name__}, creating new version")
+                print(f"Entity {entity.id} modified during {func.__name__}, creating new version puttana madonna")
                 entity.fork()
+                print("FORKED ENTITY new id puttana madonna",entity.id)
                 # Update result if it's the modified entity
                 if result == entity:
                     result = entity
@@ -726,23 +756,36 @@ def entity_uuid_expander_list_sync(param_name: str) -> Callable[[Callable[PS, RT
             if param_name in bound.arguments:
                 items = bound.arguments[param_name]
                 if isinstance(items, list):
+                    msg = f"Processing list of {len(items)} items for {func.__name__}"
+                    EntityRegistry._logger.debug(msg)
+                    print(msg)
+                    
                     # Process each item
                     processed = []
                     for item in items:
                         if isinstance(item, UUID):
+                            EntityRegistry._logger.debug(f"Expanding UUID {item}")
+                            print(f"Expanding UUID {item}")
                             ent = EntityRegistry.get(item)
                             if ent is None:
-                                raise ValueError(f"No entity found for UUID: {item}")
+                                msg = f"No entity found for UUID: {item}"
+                                EntityRegistry._logger.error(msg)
+                                print(f"ERROR: {msg}")
+                                raise ValueError(msg)
                             processed.append(ent)
                         else:
                             # Check if entity needs versioning
                             cold_snapshot = EntityRegistry.get(item.id)
                             if cold_snapshot is not None and item.has_modifications(cold_snapshot):
+                                EntityRegistry._logger.debug(f"Entity {item.id} has modifications, creating new version")
+                                print(f"Entity {item.id} has modifications, creating new version")
                                 item.fork()
                             processed.append(item)
                     bound.arguments[param_name] = processed
             
             # Call original function
+            EntityRegistry._logger.debug(f"Calling {func.__name__}")
+            print(f"Calling {func.__name__}")
             result = func(*bound.args, **bound.kwargs)
             
             # Check for modifications after call
@@ -753,6 +796,8 @@ def entity_uuid_expander_list_sync(param_name: str) -> Callable[[Callable[PS, RT
                         if isinstance(item, Entity):
                             cold_snapshot = EntityRegistry.get(item.id)
                             if cold_snapshot is not None and item.has_modifications(cold_snapshot):
+                                EntityRegistry._logger.debug(f"Entity {item.id} modified during {func.__name__}, creating new version")
+                                print(f"Entity {item.id} modified during {func.__name__}, creating new version")
                                 item.fork()
             
             return result
@@ -774,33 +819,62 @@ def entity_uuid_expander_list_async(param_name: str) -> Callable[[Callable[PS, A
             if param_name in bound.arguments:
                 items = bound.arguments[param_name]
                 if isinstance(items, list):
+                    msg = f"Expander decorator Processing list of {len(items)} items for {func.__name__}"
+                    EntityRegistry._logger.debug(msg)
+                    print(msg)
+                    
                     # Process each item
                     processed = []
                     for item in items:
                         if isinstance(item, UUID):
+                            EntityRegistry._logger.debug(f"Expanding UUID {item}")
+                            print(f"Expanding UUID {item}")
                             ent = EntityRegistry.get(item)
+                            EntityRegistry._logger.debug(f"Entity found for UUID {item}: {ent}")
+                            print(f"Entity found for UUID {item}: {ent}")
                             if ent is None:
-                                raise ValueError(f"No entity found for UUID: {item}")
+                                msg = f"No entity found for UUID: {item}"
+                                EntityRegistry._logger.error(msg)
+                                print(f"ERROR: {msg}")
+                                raise ValueError(msg)
                             processed.append(ent)
                         else:
+                            EntityRegistry._logger.debug(f"Expanding entity {item.id}")
+                            print(f"Expanding entity {item.id}")
                             # Check if entity needs versioning
                             cold_snapshot = EntityRegistry.get(item.id)
                             if cold_snapshot is not None and item.has_modifications(cold_snapshot):
+                                EntityRegistry._logger.debug(f"Entity {item.id} has modifications, creating new version")
+                                print(f"Entity {item.id} has modifications, creating new version")
                                 item.fork()
                             processed.append(item)
                     bound.arguments[param_name] = processed
             
             # Call original function
+            EntityRegistry._logger.debug(f"Expander decorator Calling {func.__name__}")
+            print(f"Expander decorator Calling {func.__name__}")
             result = await func(*bound.args, **bound.kwargs)
             
             # Check for modifications after call
+            EntityRegistry._logger.debug(f"Expander decorator Checking for modifications after call")
+            print(f"Expander decorator Checking for modifications after call")
             if param_name in bound.arguments:
                 items = bound.arguments[param_name]
+                EntityRegistry._logger.debug(f"Expander decorator Items: {items}")
+                print(f"Expander decorator Items: {items}")
                 if isinstance(items, list):
+                    EntityRegistry._logger.debug(f"Expander decorator Items are a list")
+                    print(f"Expander decorator Items are a list")
                     for item in items:
                         if isinstance(item, Entity):
+                            EntityRegistry._logger.debug(f"Expander decorator Item is an Entity")
+                            print(f"Expander decorator Item is an Entity")
                             cold_snapshot = EntityRegistry.get(item.id)
+                            EntityRegistry._logger.debug(f"Expander decorator Cold snapshot: {cold_snapshot}")
+                            print(f"Expander decorator Cold snapshot: {cold_snapshot}")
                             if cold_snapshot is not None and item.has_modifications(cold_snapshot):
+                                EntityRegistry._logger.debug(f"Entity {item.id} modified during {func.__name__}, creating new version")
+                                print(f"Entity {item.id} modified during {func.__name__}, creating new version")
                                 item.fork()
             
             return result

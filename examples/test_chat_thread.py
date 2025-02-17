@@ -13,14 +13,15 @@ import logging
 import time
 
 # Configure logging
+
+# Initialize registry and make it globally available
+EntityRegistry()
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-# Initialize registry and make it globally available
-EntityRegistry()
-
+# Add this line to ensure we capture all loggers
+logging.getLogger().setLevel(logging.DEBUG)
 # Clear any existing state
 EntityRegistry.clear()
 EntityRegistry.clear_logs()
