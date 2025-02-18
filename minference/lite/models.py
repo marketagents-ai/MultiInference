@@ -1146,8 +1146,12 @@ class RawOutput(Entity):
     def create_processed_output(self) -> 'ProcessedOutput':
         """Create a ProcessedOutput from this raw output."""
         content, json_object, usage, error = self._parse_result()
-        if (json_object is None and content is None) or self.chat_thread_id is None:
+        if (json_object is None and content is None) is None:
             raise ValueError("No content or JSON object found in raw output")
+        if self.chat_thread_id is None:
+            raise ValueError("Chat thread ID is required to create a ProcessedOutput")
+        if self.chat_thread_live_id is None:
+            raise ValueError("Chat thread live ID is required to create a ProcessedOutput")
    
         return ProcessedOutput(
             content=content,
@@ -1391,6 +1395,7 @@ class ChatThread(Entity):
         return None
     
     # @entity_uuid_expander("self")
+    @entity_tracer
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_user_message")

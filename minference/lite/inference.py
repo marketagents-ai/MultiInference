@@ -55,7 +55,7 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
     """Create a hashmap of chat threads by their IDs."""
     return {p.id: p for p in chat_threads if p.id is not None}
 
-# @entity_tracer_list("chat_threads")
+@entity_tracer
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
@@ -164,18 +164,11 @@ async def run_parallel_ai_completion(
     llm_outputs = [item for sublist in results for item in sublist]
     
     
-    #after result the chat_thread_id should be unchanged
-    #check it 
-    for chat_thread in chat_threads:
-        if chat_thread.id not in original_ids:
-            
-            raise Exception("ChatThread ID should be unchanged")
 
     
     EntityRegistry._logger.info(f"Processing {len(llm_outputs)} LLM outputs")
     processed_outputs = await process_outputs_and_execute_tools(chat_threads, llm_outputs)
-    # for chat_thread in chat_threads:
-    #     if chat_thread.id not in original_ids:
+
 
     
     return processed_outputs
