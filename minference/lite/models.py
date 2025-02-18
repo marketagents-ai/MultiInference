@@ -65,7 +65,7 @@ from openai.types.chat.chat_completion import Choice, ChatCompletion
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion import Choice
 
-from minference.entity import Entity, EntityRegistry, entity_uuid_expander
+from minference.entity import Entity, EntityRegistry, entity_tracer
 
 T_Self = TypeVar('T_Self', bound='CallableTool')
 
@@ -118,7 +118,8 @@ class CallableTool(Entity):
                     "docstring": "Multiplies two numbers together",
                     "callable_text": "def multiply(x: float, y: float) -> float:\n    return x * y"
                 }
-            ]
+            ],
+            "populate_by_name": True
         }
     }
     
@@ -1382,7 +1383,8 @@ class ChatThread(Entity):
         if self.forced_output and self.forced_output.name == tool_name:
             return self.forced_output
         return None
-    #@entity_uuid_expander("self")
+    
+    # @entity_uuid_expander("self")
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_user_message")
@@ -1415,14 +1417,13 @@ class ChatThread(Entity):
         
         return user_message
     
-    # @entity_uuid_expander("self")
+    @entity_tracer
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
         
         # Get the parent message
-        print("DIOMERDAAA",self)
-        print("STORIADIOMERDAAA",self.history)
+        
         if not self.history:
             EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add chat turn to empty history")
             raise ValueError("Cannot add chat turn to empty history")

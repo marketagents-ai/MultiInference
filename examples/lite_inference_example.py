@@ -8,7 +8,9 @@ import time
 from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 from minference.entity import EntityRegistry
 import os
-
+import logging
+#set logging level to debug
+logging.basicConfig(level=logging.DEBUG)
 async def main():
     load_dotenv()
     EntityRegistry()
@@ -76,12 +78,7 @@ async def main():
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
-    all_messages = EntityRegistry.list_by_type(ChatMessage)
-    messages_to_Dict = [message.to_dict() for message in all_messages]
-    anthropic_messages = msg_dict_to_anthropic(messages_to_Dict)
-    print("messages object",all_messages)
-    print("messages dict",messages_to_Dict)
-    print("anthropic messages",anthropic_messages)
+ 
 
 
     for chat in all_chats:
@@ -102,6 +99,5 @@ async def main():
 
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
-    print(EntityRegistry.list_by_type(Usage))
     #print mermaid graph of first chat
     print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))

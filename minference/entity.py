@@ -360,7 +360,6 @@ class EntityRegistry(BaseRegistry[EType]):
         if entity.has_modifications(cold_snapshot):
             cls._logger.debug(f"Entity {ent_id} has modifications, creating new version via fork")
             entity.fork()
-            print("FORKED ENTITY new id",entity.id)
             cls._logger.debug(f"Created new version for entity {ent_id}")
             return entity
             
@@ -680,214 +679,99 @@ class EntityRegistry(BaseRegistry[EType]):
 # 4) Decorators
 ########################################
 
-# For the decorators we now simply call register.
-# (Since register handles UUID inputs and updates the working object.)
+# Type variables for decorators
 T_dec = TypeVar("T_dec")
 PS = ParamSpec("PS")
 RT = TypeVar("RT")
 
-def entity_uuid_expander(param_name: str):
-    """
-    Decorator to handle entity UUID expansion and versioning.
-    Ensures that any modifications to the entity result in a new version via fork().
-    """
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Get the entity from args or kwargs
-            entity = kwargs.get(param_name)
-            EntityRegistry._logger.debug(f"Wrapper called with entity: {entity}")
-            print(f"Wrapper called with entity: {entity}")
-            
-            if entity is None and len(args) > 0:
-                entity = args[0]
-                EntityRegistry._logger.debug(f"Wrapper called with entity from args: {entity}")
-                print(f"Wrapper called with entity from args: {entity}")
-            
-            if not isinstance(entity, Entity):
-                msg = f"Parameter {param_name} must be an Entity instance"
-                EntityRegistry._logger.error(msg)
-                print(f"ERROR: {msg}")
-                raise ValueError(msg)
+def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
+    """Helper to collect all Entity instances from args and kwargs with their memory ids."""
+    entities = {}
+    
+    # Scan args
+    for arg in args:
+        if isinstance(arg, Entity):
+            entities[id(arg)] = arg
+        elif isinstance(arg, (list, tuple, set)):
+            for item in arg:
+                if isinstance(item, Entity):
+                    entities[id(item)] = item
+        elif isinstance(arg, dict):
+            for item in arg.values():
+                if isinstance(item, Entity):
+                    entities[id(item)] = item
+    
+    # Scan kwargs
+    for arg in kwargs.values():
+        if isinstance(arg, Entity):
+            entities[id(arg)] = arg
+        elif isinstance(arg, (list, tuple, set)):
+            for item in arg:
+                if isinstance(item, Entity):
+                    entities[id(item)] = item
+        elif isinstance(arg, dict):
+            for item in arg.values():
+                if isinstance(item, Entity):
+                    entities[id(item)] = item
+    
+    return entities
 
-            # Get cold snapshot from registry
-            cold_snapshot = EntityRegistry.get(entity.id)
-            EntityRegistry._logger.debug(f"Cold snapshot from registry for entity {entity.id}: {cold_snapshot}")
-            print(f"Cold snapshot from registry for entity {entity.id}: {cold_snapshot}")
+def _check_and_fork_modified(entity: Entity) -> None:
+    """Helper to check if an entity is modified and fork it if needed."""
+    cold_snapshot = EntityRegistry.get_cold_snapshot(entity.id)
+    if cold_snapshot is not None and entity.has_modifications(cold_snapshot):
+        EntityRegistry._logger.debug(f"Entity {entity.id} has modifications, creating new version")
+        entity.fork()
+
+def entity_tracer(func):
+    """
+    Decorator to trace entity modifications and handle versioning.
+    Automatically detects and handles all Entity instances in arguments.
+    Works with both sync and async functions.
+    """
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            # Collect all entities from inputs
+            entities = _collect_entities(args, kwargs)
             
-            if cold_snapshot is not None and entity.has_modifications(cold_snapshot):
-                EntityRegistry._logger.debug(f"Entity {entity.id} has modifications, creating new version via fork")
-                print(f"Entity {entity.id} has modifications, creating new version via fork - dio ladro")
-                entity.fork()
-                print("FORKED ENTITY new id",entity.id)
+            # Check for modifications before call
+            for entity in entities.values():
+                _check_and_fork_modified(entity)
 
             # Call the original function
-            EntityRegistry._logger.debug(f"Calling {func.__name__} with entity {entity.id}")
-            print(f"Calling {func.__name__} with entity {entity.id}")
             result = await func(*args, **kwargs)
 
-            # After function call, check if entity was modified
-            cold_snapshot = EntityRegistry.get(entity.id)
-            if cold_snapshot is not None and entity.has_modifications(cold_snapshot):
-                EntityRegistry._logger.debug(f"Entity {entity.id} modified during {func.__name__}, creating new version")
-                print(f"Entity {entity.id} modified during {func.__name__}, creating new version puttana madonna")
-                entity.fork()
-                print("FORKED ENTITY new id puttana madonna",entity.id)
-                # Update result if it's the modified entity
-                if result == entity:
-                    result = entity
-
-            return result
-        return wrapper
-    return decorator
-
-def entity_uuid_expander_list_sync(param_name: str) -> Callable[[Callable[PS, RT]], Callable[PS, RT]]:
-    """
-    Synchronous decorator factory for functions accepting a list of entities.
-    Ensures proper versioning of modified entities via fork().
-    """
-    def decorator(func: Callable[PS, RT]) -> Callable[PS, RT]:
-        @functools.wraps(func)
-        def wrapper(*args: PS.args, **kwargs: PS.kwargs) -> RT:
-            sig = inspect.signature(func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            
-            if param_name in bound.arguments:
-                items = bound.arguments[param_name]
-                if isinstance(items, list):
-                    msg = f"Processing list of {len(items)} items for {func.__name__}"
-                    EntityRegistry._logger.debug(msg)
-                    print(msg)
-                    
-                    # Process each item
-                    processed = []
-                    for item in items:
-                        if isinstance(item, UUID):
-                            EntityRegistry._logger.debug(f"Expanding UUID {item}")
-                            print(f"Expanding UUID {item}")
-                            ent = EntityRegistry.get(item)
-                            if ent is None:
-                                msg = f"No entity found for UUID: {item}"
-                                EntityRegistry._logger.error(msg)
-                                print(f"ERROR: {msg}")
-                                raise ValueError(msg)
-                            processed.append(ent)
-                        else:
-                            # Check if entity needs versioning
-                            cold_snapshot = EntityRegistry.get(item.id)
-                            if cold_snapshot is not None and item.has_modifications(cold_snapshot):
-                                EntityRegistry._logger.debug(f"Entity {item.id} has modifications, creating new version")
-                                print(f"Entity {item.id} has modifications, creating new version")
-                                item.fork()
-                            processed.append(item)
-                    bound.arguments[param_name] = processed
-            
-            # Call original function
-            EntityRegistry._logger.debug(f"Calling {func.__name__}")
-            print(f"Calling {func.__name__}")
-            result = func(*bound.args, **bound.kwargs)
-            
             # Check for modifications after call
-            if param_name in bound.arguments:
-                items = bound.arguments[param_name]
-                if isinstance(items, list):
-                    for item in items:
-                        if isinstance(item, Entity):
-                            cold_snapshot = EntityRegistry.get(item.id)
-                            if cold_snapshot is not None and item.has_modifications(cold_snapshot):
-                                EntityRegistry._logger.debug(f"Entity {item.id} modified during {func.__name__}, creating new version")
-                                print(f"Entity {item.id} modified during {func.__name__}, creating new version")
-                                item.fork()
-            
-            return result
-        return wrapper
-    return decorator
+            for entity in entities.values():
+                _check_and_fork_modified(entity)
+                
+            # If result is an entity that was modified, return the forked version
+            if isinstance(result, Entity) and id(result) in entities:
+                return entities[id(result)]
 
-def entity_uuid_expander_list_async(param_name: str) -> Callable[[Callable[PS, Awaitable[RT]]], Callable[PS, Awaitable[RT]]]:
-    """
-    Asynchronous decorator factory for functions accepting a list of entities.
-    Ensures proper versioning of modified entities via fork().
-    """
-    def decorator(func: Callable[PS, Awaitable[RT]]) -> Callable[PS, Awaitable[RT]]:
-        @functools.wraps(func)
-        async def wrapper(*args: PS.args, **kwargs: PS.kwargs) -> RT:
-            sig = inspect.signature(func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
+            return result
+        return async_wrapper
+    else:
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            # Collect all entities from inputs
+            entities = _collect_entities(args, kwargs)
             
-            if param_name in bound.arguments:
-                items = bound.arguments[param_name]
-                if isinstance(items, list):
-                    msg = f"Expander decorator Processing list of {len(items)} items for {func.__name__}"
-                    EntityRegistry._logger.debug(msg)
-                    print(msg)
-                    
-                    # Process each item
-                    processed = []
-                    for item in items:
-                        if isinstance(item, UUID):
-                            EntityRegistry._logger.debug(f"Expanding UUID {item}")
-                            print(f"Expanding UUID {item}")
-                            ent = EntityRegistry.get(item)
-                            EntityRegistry._logger.debug(f"Entity found for UUID {item}: {ent}")
-                            print(f"Entity found for UUID {item}: {ent}")
-                            if ent is None:
-                                msg = f"No entity found for UUID: {item}"
-                                EntityRegistry._logger.error(msg)
-                                print(f"ERROR: {msg}")
-                                raise ValueError(msg)
-                            processed.append(ent)
-                        else:
-                            EntityRegistry._logger.debug(f"Expanding entity {item.id}")
-                            print(f"Expanding entity {item.id}")
-                            # Check if entity needs versioning
-                            cold_snapshot = EntityRegistry.get(item.id)
-                            if cold_snapshot is not None and item.has_modifications(cold_snapshot):
-                                EntityRegistry._logger.debug(f"Entity {item.id} has modifications, creating new version")
-                                print(f"Entity {item.id} has modifications, creating new version")
-                                item.fork()
-                            processed.append(item)
-                    bound.arguments[param_name] = processed
-            
-            # Call original function
-            EntityRegistry._logger.debug(f"Expander decorator Calling {func.__name__}")
-            print(f"Expander decorator Calling {func.__name__}")
-            result = await func(*bound.args, **bound.kwargs)
-            
+            # Check for modifications before call
+            for entity in entities.values():
+                _check_and_fork_modified(entity)
+
+            # Call the original function
+            result = func(*args, **kwargs)
+
             # Check for modifications after call
-            EntityRegistry._logger.debug(f"Expander decorator Checking for modifications after call")
-            print(f"Expander decorator Checking for modifications after call")
-            if param_name in bound.arguments:
-                items = bound.arguments[param_name]
-                EntityRegistry._logger.debug(f"Expander decorator Items: {items}")
-                print(f"Expander decorator Items: {items}")
-                if isinstance(items, list):
-                    EntityRegistry._logger.debug(f"Expander decorator Items are a list")
-                    print(f"Expander decorator Items are a list")
-                    for item in items:
-                        if isinstance(item, Entity):
-                            EntityRegistry._logger.debug(f"Expander decorator Item is an Entity")
-                            print(f"Expander decorator Item is an Entity")
-                            cold_snapshot = EntityRegistry.get(item.id)
-                            EntityRegistry._logger.debug(f"Expander decorator Cold snapshot: {cold_snapshot}")
-                            print(f"Expander decorator Cold snapshot: {cold_snapshot}")
-                            if cold_snapshot is not None and item.has_modifications(cold_snapshot):
-                                EntityRegistry._logger.debug(f"Entity {item.id} modified during {func.__name__}, creating new version")
-                                print(f"Entity {item.id} modified during {func.__name__}, creating new version")
-                                item.fork()
-            
-            return result
-        return wrapper
-    return decorator
+            for entity in entities.values():
+                _check_and_fork_modified(entity)
+                
+            # If result is an entity that was modified, return the forked version
+            if isinstance(result, Entity) and id(result) in entities:
+                return entities[id(result)]
 
-def entity_uuid_expander_list(param_name: str) -> Any:
-    """
-    Decorator factory that dispatches between synchronous and asynchronous
-    list decorators based on the wrapped function.
-    """
-    def decorator(func: Any) -> Any:
-        if inspect.iscoroutinefunction(func):
-            return entity_uuid_expander_list_async(param_name)(func)
-        return entity_uuid_expander_list_sync(param_name)(func)
-    return decorator
+            return result
+        return sync_wrapper
