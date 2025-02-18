@@ -184,6 +184,7 @@ def prepare_requests_file(chat_threads: List[ChatThread], client: str, filename:
         request = convert_chat_thread_to_request(chat_thread, client)
         if request:
             metadata = {
+                "chat_thread_live_id": str(chat_thread.live_uuid),
                 "chat_thread_id": str(chat_thread.id),
                 "start_time": time.time(),
                 "end_time": None,

@@ -909,7 +909,11 @@ class RawOutput(Entity):
     )
     chat_thread_id: Optional[UUID] = Field(
         default=None,
-        description="ID of the associated chat thread"
+        description="ID of the associated chat thread, can be used to retrieve from registry a frozen copy of the chat thread at creation time"
+    )
+    chat_thread_live_id: Optional[UUID] = Field(
+        default=None,
+        description="Live ID of the associated chat thread"
     )
     client: LLMClient = Field(
         description="The LLM client used for this call"
@@ -1153,7 +1157,8 @@ class RawOutput(Entity):
             time_taken=self.time_taken,
             llm_client=self.client,
             raw_output=self,
-            chat_thread_id=self.chat_thread_id
+            chat_thread_id=self.chat_thread_id,
+            chat_thread_live_id=self.chat_thread_live_id
         )
     
 class ProcessedOutput(Entity):
@@ -1169,6 +1174,7 @@ class ProcessedOutput(Entity):
     llm_client: LLMClient
     raw_output: RawOutput
     chat_thread_id: UUID
+    chat_thread_live_id: UUID
     
 class ChatThread(Entity):
     """A chat thread entity managing conversation flow and message history."""
