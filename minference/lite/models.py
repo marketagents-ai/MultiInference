@@ -1429,6 +1429,12 @@ class ChatThread(Entity):
         return user_message
     
     @entity_tracer
+    def reset_workflow_step(self):
+        """Reset the workflow step to 0"""
+        self.workflow_step = 0
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Reset workflow step to 0")
+
+    @entity_tracer
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
         EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
@@ -1505,6 +1511,7 @@ class ChatThread(Entity):
                     EntityRegistry._logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
                     EntityRegistry._logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
                     if self.workflow_step is not None and self.llm_config.response_format == ResponseFormat.workflow:
+                        "not checking if the excuted tool is the tool that was supposed to be executed - no idea how could this be tesxted"
                         self.workflow_step += 1
                 except Exception as e:
                     EntityRegistry._logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
