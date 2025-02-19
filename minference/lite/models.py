@@ -1499,10 +1499,13 @@ class ChatThread(Entity):
                         )
                         EntityRegistry._logger.info(f"ChatThread({self.id}): Tool execution successful")
                     
+
+                    
                     self.history.append(tool_message)
                     EntityRegistry._logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
                     EntityRegistry._logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
-                    
+                    if self.workflow_step is not None and self.llm_config.response_format == ResponseFormat.workflow:
+                        self.workflow_step += 1
                 except Exception as e:
                     EntityRegistry._logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
                     error_message = ChatMessage(

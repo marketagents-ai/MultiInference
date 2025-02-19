@@ -214,6 +214,7 @@ async def main():
 
     # Create initial chats and run them in parallel
     all_chats = [oai_chat, litellm_chat, anthropic_chat]
+    all_chats = [oai_chat]
     print("Starting parallel sequential tool inference...")
     await run_parallel_chats(orchestrator, all_chats)
 
