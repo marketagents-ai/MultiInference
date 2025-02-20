@@ -56,7 +56,7 @@ class Entity(BaseModel):
     Snapshots + re-registration => auto-versioning if fields change in place.
     """
     id: UUID = Field(default_factory=uuid4, description="Unique identifier for this entity instance")
-    live_uuid: UUID = Field(default_factory=uuid4, description="Stable identifier for warm/active instance that persists across forks")
+    live_id: UUID = Field(default_factory=uuid4, description="Stable identifier for warm/active instance that persists across forks")
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Timestamp when entity was created")
     parent_id: Optional[UUID] = Field(default=None, description="If set, points to parent's version ID")
     lineage_id: UUID = Field(default_factory=uuid4, description="Stable ID for entire lineage of versions.")
@@ -73,7 +73,7 @@ class Entity(BaseModel):
         Similar to model_dump but with special handling for entity comparisons.
         """
         exclude_keys = kwargs.get('exclude', set())
-        exclude_keys = exclude_keys.union({'id', 'created_at', 'lineage_id', 'parent_id', 'live_uuid'})
+        exclude_keys = exclude_keys.union({'id', 'created_at', 'lineage_id', 'parent_id', 'live_id'})
         kwargs['exclude'] = exclude_keys
         
         # Get base dump
@@ -377,9 +377,9 @@ class EntityRegistry(BaseRegistry[EType]):
         if expected_type and not isinstance(entity, expected_type):
             cls._logger.error(f"Type mismatch for {entity_id}. Expected {expected_type.__name__}, got {type(entity).__name__}")
             return None
-        # Return a copy of the cold snapshot with a new live_uuid
+        # Return a copy of the cold snapshot with a new live_id
         warm_copy = deepcopy(entity)
-        warm_copy.live_uuid = uuid4()  # New live instance gets new live_uuid
+        warm_copy.live_id = uuid4()  # New live instance gets new live_id
         return warm_copy
 
     @classmethod

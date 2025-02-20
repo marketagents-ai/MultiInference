@@ -59,7 +59,7 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
-    thread_id_mappings = {chat_thread.live_uuid: chat_thread for chat_thread in chat_threads}
+    thread_id_mappings = {chat_thread.live_id: chat_thread for chat_thread in chat_threads}
     history_update_tasks = []
     
     EntityRegistry._logger.info("""

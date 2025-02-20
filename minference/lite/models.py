@@ -1585,6 +1585,42 @@ class ChatThread(Entity):
                 history.append(msg)
             values['history'] = history
         return values
+    
+    def fork(self, force: bool = False, **kwargs) -> Self:
+        EntityRegistry._logger.debug(f"Fork called on entity {self.id} (force={force}, modifications={kwargs})")
+        
+        # Retrieve cold snapshot to compare modifications.
+        cold_snapshot = EntityRegistry.get_cold_snapshot(self.id)
+        if cold_snapshot is None:
+            EntityRegistry._logger.debug(f"No cold snapshot found - registering new entity {self.id}")
+            EntityRegistry.register(self)
+            return self
+
+        # Apply kwargs modifications if any.
+        if kwargs:
+            EntityRegistry._logger.debug(f"Applying modifications to entity {self.id}: {kwargs}")
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+        
+        # Now check for modifications (this covers both external changes and kwargs)
+        if not force and not self.has_modifications(cold_snapshot):
+            EntityRegistry._logger.debug(f"No actual modifications and not forced - returning entity {self.id}")
+            return self
+        
+        # Create new version since modifications exist.
+        old_id = self.id
+        self.id = uuid4()
+        self.parent_id = old_id
+        EntityRegistry._logger.debug(f"Creating new version: {old_id} -> {self.id}")
+
+        for message in self.history:
+            message.chat_thread_uuid = self.id
+        
+        # Register the new version.
+        EntityRegistry.register(self)
+        
+        EntityRegistry._logger.debug(f"Fork complete: created new version {self.id} from {old_id}")
+        return self
 
 
 
