@@ -684,7 +684,7 @@ class ChatMessage(Entity):
         description="UUID of the author of the message"
     )
 
-    chat_thread_uuid: Optional[UUID] = Field(
+    chat_thread_id: Optional[UUID] = Field(
         default=None,
         description="UUID of the chat thread this message belongs to"
     )
@@ -1413,7 +1413,7 @@ class ChatThread(Entity):
         user_message = ChatMessage(
             role=MessageRole.user,
             content=self.new_message,
-            chat_thread_uuid=self.id,
+            chat_thread_id=self.id,
             parent_message_uuid=parent_id
         )
         
@@ -1453,7 +1453,7 @@ class ChatThread(Entity):
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
-            chat_thread_uuid=self.id,
+            chat_thread_id=self.id,
             parent_message_uuid=parent_message.id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
@@ -1480,7 +1480,7 @@ class ChatThread(Entity):
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps({"status": "validated", "message": "Schema validation successful"}),
-                            chat_thread_uuid=self.id,
+                            chat_thread_id=self.id,
                             tool_name=tool.name,
                             tool_uuid=tool.id,
                             tool_type="Structured",
@@ -1496,7 +1496,7 @@ class ChatThread(Entity):
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps(tool_result),
-                            chat_thread_uuid=self.id,
+                            chat_thread_id=self.id,
                             tool_name=tool.name,
                             tool_uuid=tool.id,
                             tool_type="Callable",
@@ -1518,7 +1518,7 @@ class ChatThread(Entity):
                     error_message = ChatMessage(
                         role=MessageRole.tool,
                         content=json.dumps({"error": str(e)}),
-                        chat_thread_uuid=self.id,
+                        chat_thread_id=self.id,
                         tool_name=tool.name,
                         tool_uuid=tool.id,
                         tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
@@ -1586,41 +1586,15 @@ class ChatThread(Entity):
             values['history'] = history
         return values
     
-    def fork(self, force: bool = False, **kwargs) -> Self:
-        EntityRegistry._logger.debug(f"Fork called on entity {self.id} (force={force}, modifications={kwargs})")
-        
-        # Retrieve cold snapshot to compare modifications.
-        cold_snapshot = EntityRegistry.get_cold_snapshot(self.id)
-        if cold_snapshot is None:
-            EntityRegistry._logger.debug(f"No cold snapshot found - registering new entity {self.id}")
-            EntityRegistry.register(self)
-            return self
-
-        # Apply kwargs modifications if any.
-        if kwargs:
-            EntityRegistry._logger.debug(f"Applying modifications to entity {self.id}: {kwargs}")
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-        
-        # Now check for modifications (this covers both external changes and kwargs)
-        if not force and not self.has_modifications(cold_snapshot):
-            EntityRegistry._logger.debug(f"No actual modifications and not forced - returning entity {self.id}")
-            return self
-        
-        # Create new version since modifications exist.
-        old_id = self.id
-        self.id = uuid4()
-        self.parent_id = old_id
-        EntityRegistry._logger.debug(f"Creating new version: {old_id} -> {self.id}")
-
+    def _apply_modifications_and_create_version(self, cold_snapshot: 'Entity', force: bool, **kwargs) -> bool:
+        """ calls the Entity class apply modifications and adds a patch to the message chat thread history ids"""
+        super()._apply_modifications_and_create_version(cold_snapshot, force, **kwargs)
+        new_parent_message_uuid = None
         for message in self.history:
-            message.chat_thread_uuid = self.id
-        
-        # Register the new version.
-        EntityRegistry.register(self)
-        
-        EntityRegistry._logger.debug(f"Fork complete: created new version {self.id} from {old_id}")
-        return self
+            message.fork(chat_thread_id = self.id, parent_message_uuid = new_parent_message_uuid if new_parent_message_uuid else message.parent_message_uuid)
+            new_parent_message_uuid = message.id
+        return True
+
 
 
 

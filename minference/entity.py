@@ -60,7 +60,7 @@ class Entity(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Timestamp when entity was created")
     parent_id: Optional[UUID] = Field(default=None, description="If set, points to parent's version ID")
     lineage_id: UUID = Field(default_factory=uuid4, description="Stable ID for entire lineage of versions.")
-
+    old_ids: List[UUID] = Field(default_factory=list, description="List of previous IDs for this entity")
     class Config:
         json_encoders = {
             UUID: str,
@@ -195,40 +195,57 @@ class Entity(BaseModel):
                 diff.add_diff(field, "modified", old_value=other_value, new_value=self_value)
         
         return diff
-
-    def fork(self, force: bool = False, **kwargs) -> Self:
-        EntityRegistry._logger.debug(f"Fork called on entity {self.id} (force={force}, modifications={kwargs})")
+    
+    def _apply_modifications_and_create_version(self, cold_snapshot: 'Entity', force: bool, **kwargs) -> bool:
+        """Helper method to apply modifications and create a new version if needed.
         
-        # Retrieve cold snapshot to compare modifications.
-        cold_snapshot = EntityRegistry.get_cold_snapshot(self.id)
-        if cold_snapshot is None:
-            EntityRegistry._logger.debug(f"No cold snapshot found - registering new entity {self.id}")
-            EntityRegistry.register(self)
-            return self
-
+        Args:
+            cold_snapshot: The cold snapshot to compare against
+            force: Whether to force a new version
+            **kwargs: Modifications to apply
+            
+        Returns:
+            bool: True if a new version was created, False otherwise
+        """
         # Apply kwargs modifications if any.
         if kwargs:
             EntityRegistry._logger.debug(f"Applying modifications to entity {self.id}: {kwargs}")
             for key, value in kwargs.items():
                 setattr(self, key, value)
         
-        # Now check for modifications (this covers both external changes and kwargs)
+        # Check for modifications (this covers both external changes and kwargs)
         if not force and not self.has_modifications(cold_snapshot):
             EntityRegistry._logger.debug(f"No actual modifications and not forced - returning entity {self.id}")
-            return self
-        
+            return False
+            
         # Create new version since modifications exist.
         old_id = self.id
         self.id = uuid4()
+        self.old_ids.append(old_id)
         self.parent_id = old_id
         EntityRegistry._logger.debug(f"Creating new version: {old_id} -> {self.id}")
+        return True
+
+    def fork(self, force: bool = False, **kwargs) -> Self:
+        EntityRegistry._logger.debug(f"Fork called on entity {self.id} (force={force}, modifications={kwargs})")
+        
+        # Retrieve cold snapshot to compare modifications.
+        cold_snapshot = EntityRegistry.get_cold_snapshot(self.id)
+        old_id = self.id
+        if cold_snapshot is None:
+            EntityRegistry._logger.debug(f"No cold snapshot found - registering new entity {self.id}")
+            EntityRegistry.register(self)
+            return self
+
+        # Apply modifications and create new version if needed
+        if not self._apply_modifications_and_create_version(cold_snapshot, force, **kwargs):
+            return self
         
         # Register the new version.
         EntityRegistry.register(self)
         
         EntityRegistry._logger.debug(f"Fork complete: created new version {self.id} from {old_id}")
         return self
-
 
     @model_validator(mode='after')
     def register_entity(self) -> Self:

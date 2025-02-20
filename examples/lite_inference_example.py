@@ -101,3 +101,4 @@ if __name__ == "__main__":
     all_chats = asyncio.run(main())
     #print mermaid graph of first chat
     print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
+
