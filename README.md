@@ -130,6 +130,8 @@ Below is a minimal snippet demonstrating how you can create a single chat thread
 
 ```python
 import asyncio
+from minference.ecs.entity import EntityRegistry
+from minference.ecs.caregistry import CallableRegistry
 from minference.threads.inference import InferenceOrchestrator
 from minference.threads.models import (
     ChatThread, 
@@ -140,6 +142,8 @@ from minference.threads.models import (
 )
 
 async def main():
+    EntityRegistry()
+    CallableRegistry()
     orchestrator = InferenceOrchestrator()  # sets up concurrency + provider keys from env
 
     chat = ChatThread(
@@ -236,6 +240,8 @@ from typing import List
 from minference.threads.models import (
     ChatThread, LLMConfig, LLMClient, ResponseFormat, CallableTool
 )
+from minference.ecs.entity import EntityRegistry
+from minference.ecs.caregistry import CallableRegistry
 
 class MyInput(BaseModel):
     data: List[float]
@@ -249,6 +255,9 @@ def compute_stats(input_data: MyInput) -> MyOutput:
         mean=statistics.mean(input_data.data),
         stdev=statistics.pstdev(input_data.data)
     )
+
+EntityRegistry()
+CallableRegistry()
 
 # Register the function as a callable tool
 my_tool = CallableTool.from_callable(compute_stats, name="compute_stats")
@@ -276,6 +285,11 @@ For generating strictly structured data, you can define a `StructuredTool` that 
 
 ```python
 from minference.threads.models import StructuredTool
+from minference.ecs.entity import EntityRegistry
+from minference.ecs.caregistry import CallableRegistry
+
+EntityRegistry()
+CallableRegistry()
 
 json_schema = {
     "type": "object",
