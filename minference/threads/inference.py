@@ -12,7 +12,7 @@ import time
 from uuid import UUID, uuid4
 
 # Internal imports - complete set
-from minference.lite.models import (
+from minference.threads.models import (
     RawOutput, ProcessedOutput, ChatThread, LLMClient,
     ResponseFormat, Entity, ChatMessage,
     MessageRole
@@ -21,7 +21,7 @@ from minference.oai_parallel import (
     process_api_requests_from_file,
     OAIApiFromFileConfig
 )
-from minference.lite.requests import (
+from minference.clients.requests import (
     prepare_requests_file,
     convert_chat_thread_to_request,
     create_oai_completion_config,
@@ -30,7 +30,7 @@ from minference.lite.requests import (
     create_litellm_completion_config,
     create_openrouter_completion_config
 )
-from minference.entity import EntityRegistry, entity_tracer
+from minference.ecs.entity import EntityRegistry, entity_tracer
 
 
 class RequestLimits(Entity):

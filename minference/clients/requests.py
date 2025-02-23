@@ -8,9 +8,9 @@ from typing import Dict, Any, Optional, List, Union, Literal, Self
 from pydantic import ValidationError, BaseModel, Field
 from uuid import UUID
 from anthropic.types.message_create_params import ToolChoiceToolChoiceTool, ToolChoiceToolChoiceAuto
-from minference.lite.models import ChatThread, LLMClient, ResponseFormat
+from minference.threads.models import ChatThread, LLMClient, ResponseFormat
 from minference.oai_parallel import OAIApiFromFileConfig
-from minference.entity import EntityRegistry
+from minference.ecs.entity import EntityRegistry
 from pydantic import BaseModel, Field, model_validator
 from typing import  Optional, Union, Dict, List, Any
 

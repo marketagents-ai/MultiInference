@@ -15,7 +15,7 @@ from copy import deepcopy
 from pydantic import BaseModel, Field, model_validator
 
 # This is your original base registry import
-from minference.base_registry import BaseRegistry
+from minference.ecs.base_registry import BaseRegistry
 
 ########################################
 # 1) Protocol + Generics

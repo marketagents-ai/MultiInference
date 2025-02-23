@@ -20,9 +20,9 @@ from jsonschema import validate
 from openai.types.chat import ChatCompletionToolParam
 from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
-from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
+from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
-from minference.caregistry import (
+from minference.ecs.caregistry import (
     CallableRegistry,
     derive_input_schema,
     derive_output_schema,
@@ -65,7 +65,7 @@ from openai.types.chat.chat_completion import Choice, ChatCompletion
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion import Choice
 
-from minference.entity import Entity, EntityRegistry, entity_tracer
+from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
 
 T_Self = TypeVar('T_Self', bound='CallableTool')
 

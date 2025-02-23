@@ -1,13 +1,13 @@
 import asyncio
 from dotenv import load_dotenv
-from minference.lite.inference import InferenceOrchestrator, RequestLimits
-from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool
+from minference.threads.inference import InferenceOrchestrator, RequestLimits
+from minference.threads.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool
 from typing import List
 from pydantic import BaseModel
-from minference.entity import EntityRegistry
-from minference.caregistry import CallableRegistry
+from minference.ecs.entity import EntityRegistry
+from minference.ecs.caregistry import CallableRegistry
 import statistics
-from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
+from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
 # Example BaseModel for inputs/outputs
 class NumbersInput(BaseModel):
