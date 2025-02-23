@@ -118,6 +118,7 @@ git clone https://github.com/marketagents-ai/MultiInference
 cd MultiInference
 pip install -e .
 ```
+locate `.env.example` and copy it to `.env` and fill in your API keys.
 
 ---
 
