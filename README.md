@@ -140,8 +140,10 @@ from minference.threads.models import (
     ResponseFormat, 
     SystemPrompt
 )
+from dotenv import load_dotenv
 
 async def main():
+    load_dotenv()
     EntityRegistry()
     CallableRegistry()
     orchestrator = InferenceOrchestrator()  # sets up concurrency + provider keys from env
@@ -242,6 +244,7 @@ from minference.threads.models import (
 )
 from minference.ecs.entity import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
+from dotenv import load_dotenv
 
 class MyInput(BaseModel):
     data: List[float]
@@ -256,6 +259,7 @@ def compute_stats(input_data: MyInput) -> MyOutput:
         stdev=statistics.pstdev(input_data.data)
     )
 
+load_dotenv()
 EntityRegistry()
 CallableRegistry()
 
@@ -287,7 +291,9 @@ For generating strictly structured data, you can define a `StructuredTool` that 
 from minference.threads.models import StructuredTool
 from minference.ecs.entity import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
+from dotenv import load_dotenv
 
+load_dotenv()
 EntityRegistry()
 CallableRegistry()
 
