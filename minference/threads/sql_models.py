@@ -12,7 +12,7 @@ It has been adjusted to avoid linting issues (e.g., avoid calling Literal[...] a
 
 from typing import List, Optional, Dict, Any, Union, Literal, cast
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, UTC
 
 from sqlmodel import SQLModel, Field, Relationship, Session
 from sqlalchemy import String, Column, JSON
@@ -138,7 +138,12 @@ class UsageSQL(SQLModel, table=True):
     """SQL model for Usage"""
     __table_args__ = {'extend_existing': True}
 
+    # Primary key and versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="usagesql.id")
+
+    # Usage metrics
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -156,12 +161,14 @@ class UsageSQL(SQLModel, table=True):
         """Convert SQL model to domain entity"""
         return Usage(
             id=self.id,
+            lineage_id=self.lineage_id,
+            parent_id=self.parent_id,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             total_tokens=self.total_tokens,
             cache_creation_input_tokens=self.cache_creation_input_tokens,
             cache_read_input_tokens=self.cache_read_input_tokens,
-            model=self.model  # Added model parameter
+            model=self.model
         )
 
     @classmethod
@@ -169,12 +176,14 @@ class UsageSQL(SQLModel, table=True):
         """Create SQL model from domain entity"""
         return cls(
             id=entity.id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
             prompt_tokens=entity.prompt_tokens,
             completion_tokens=entity.completion_tokens,
             total_tokens=entity.total_tokens,
             cache_creation_input_tokens=entity.cache_creation_input_tokens,
             cache_read_input_tokens=entity.cache_read_input_tokens,
-            model=entity.model  # Added model parameter
+            model=entity.model
         )
 
 
@@ -189,28 +198,28 @@ class ChatMessageSQL(SQLModel, table=True):
     """
     __table_args__ = {'extend_existing': True}
 
-    # Versioning
+    # Primary key and versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="chatmessagesql.id")
 
-    # Domain fields
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    role: str = Field(sa_column=Column(SQLAlchemyString))  # Store enum as string
+    # Message content
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    role: str = Field(sa_column=Column(SQLAlchemyString))
     content: str
     author_uuid: Optional[UUID] = None
     chat_thread_id: Optional[UUID] = None
     parent_message_uuid: Optional[UUID] = None
 
-    # Tool usage
+    # Tool-related fields
     tool_name: Optional[str] = None
     tool_uuid: Optional[UUID] = None
-    tool_type: Optional[ToolTypeLiteral] = Field(default=None, sa_column=Column(SQLAlchemyString))  # Store as Literal
+    tool_type: Optional[ToolTypeLiteral] = Field(default=None, sa_column=Column(SQLAlchemyString))
     oai_tool_call_id: Optional[str] = None
     tool_json_schema: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     tool_call: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
 
-    # One-to-one relationship with UsageSQL
+    # Bidirectional relationship with UsageSQL
     usage_id: Optional[UUID] = Field(default=None, foreign_key="usagesql.id")
     usage: Optional[UsageSQL] = Relationship(
         back_populates="message",
@@ -230,14 +239,14 @@ class ChatMessageSQL(SQLModel, table=True):
             lineage_id=self.lineage_id,
             parent_id=self.parent_id,
             timestamp=self.timestamp,
-            role=MessageRole(self.role),  # Convert string to enum
+            role=MessageRole(self.role),
             content=self.content,
             author_uuid=self.author_uuid,
             chat_thread_id=self.chat_thread_id,
             parent_message_uuid=self.parent_message_uuid,
             tool_name=self.tool_name,
             tool_uuid=self.tool_uuid,
-            tool_type=self.tool_type,  # Already a Literal type
+            tool_type=self.tool_type,
             oai_tool_call_id=self.oai_tool_call_id,
             tool_json_schema=self.tool_json_schema,
             tool_call=self.tool_call,
@@ -252,18 +261,18 @@ class ChatMessageSQL(SQLModel, table=True):
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             timestamp=entity.timestamp,
-            role=entity.role.value,  # Store enum value as string
+            role=entity.role.value,
             content=entity.content,
             author_uuid=entity.author_uuid,
             chat_thread_id=entity.chat_thread_id,
             parent_message_uuid=entity.parent_message_uuid,
             tool_name=entity.tool_name,
             tool_uuid=entity.tool_uuid,
-            tool_type=entity.tool_type,  # Already a Literal type
+            tool_type=entity.tool_type,
             oai_tool_call_id=entity.oai_tool_call_id,
             tool_json_schema=entity.tool_json_schema,
             tool_call=entity.tool_call,
-            usage=UsageSQL.from_entity(entity.usage) if entity.usage else None  # Fixed: set usage directly
+            usage=UsageSQL.from_entity(entity.usage) if entity.usage else None
         )
 
 
@@ -288,13 +297,14 @@ class ToolSQL(SQLModel, table=True):
 
     # Basic fields
     name: str
-    docstring: Optional[str] = None
-    input_schema: Dict[str, Any] = Field(sa_column=Column(JSON))
-    output_schema: Dict[str, Any] = Field(sa_column=Column(JSON))
-    strict_schema: bool = True
     
-    # Callable specific fields
-    callable_text: Optional[str] = None
+    # Tool type specific fields
+    json_schema: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))  # For StructuredTool
+    docstring: Optional[str] = None  # For CallableTool
+    callable_text: Optional[str] = None  # For CallableTool
+    input_schema: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # For CallableTool
+    output_schema: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # For CallableTool
+    strict_schema: bool = True  # For CallableTool
 
     # Relationships
     chat_thread_id: Optional[UUID] = None
@@ -309,7 +319,7 @@ class ToolSQL(SQLModel, table=True):
             "id": self.id,
             "lineage_id": self.lineage_id,
             "parent_id": self.parent_id,
-            "name": self.name
+            "name": self.name,
         }
         
         if self.callable_text is not None:
@@ -322,7 +332,11 @@ class ToolSQL(SQLModel, table=True):
                 callable_text=self.callable_text
             )
         else:
-            return StructuredTool(**base_args)
+            return StructuredTool(
+                **base_args,
+                description=self.docstring or "",  # Use docstring field for StructuredTool description
+                json_schema=self.json_schema or {}
+            )
 
     @classmethod
     def from_entity(cls, entity: Union[CallableTool, StructuredTool]) -> "ToolSQL":
@@ -331,7 +345,7 @@ class ToolSQL(SQLModel, table=True):
             "id": entity.id,
             "lineage_id": entity.lineage_id,
             "parent_id": entity.parent_id,
-            "name": entity.name
+            "name": entity.name,
         }
         
         if isinstance(entity, CallableTool):
@@ -341,10 +355,18 @@ class ToolSQL(SQLModel, table=True):
                 input_schema=entity.input_schema,
                 output_schema=entity.output_schema,
                 strict_schema=entity.strict_schema,
-                callable_text=entity.callable_text
+                callable_text=entity.callable_text,
+                json_schema=None
             )
         else:
-            return cls(**base_args)
+            return cls(
+                **base_args,
+                docstring=entity.description,  # Store StructuredTool description in docstring field
+                json_schema=entity.json_schema,
+                callable_text=None,
+                input_schema={},
+                output_schema={}
+            )
 
 
 ###############################################################################
