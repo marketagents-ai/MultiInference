@@ -4,7 +4,7 @@ from minference.lite.inference import InferenceOrchestrator, RequestLimits
 from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool, ChatMessage
 from typing import List
 from pydantic import BaseModel
-from minference.enregistry import EntityRegistry
+from minference.entity import EntityRegistry
 from minference.caregistry import CallableRegistry
 import statistics
 
@@ -206,6 +206,7 @@ async def main():
     #     tools=tools
     # )
     all_chats = [oai_chat, litellm_chat, anthropic_chat]
+    all_chats = [oai_chat]
     print("Starting sequential tool inference...")
     await run_parallel_chats(orchestrator, all_chats)
 
@@ -224,5 +225,7 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     print(EntityRegistry.list_by_type(ChatMessage))
+    threads = EntityRegistry.list_by_type(ChatThread)
+    print(EntityRegistry.get_lineage_mermaid(threads[0].lineage_id))
 
 

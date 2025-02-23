@@ -23,7 +23,7 @@ from minference.lite.models import (
     
 )
 from minference.caregistry import CallableRegistry
-from minference.enregistry import EntityRegistry
+from minference.entity import EntityRegistry
 from minference.lite.inference import InferenceOrchestrator, RequestLimits
 
 # Test Functions with different input/output patterns - each as a complete source string

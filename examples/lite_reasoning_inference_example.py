@@ -3,29 +3,26 @@ from dotenv import load_dotenv
 from minference.threads.inference import InferenceOrchestrator, RequestLimits
 from minference.threads.models import ChatMessage, ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool, Usage
 from typing import Literal, List
+from minference.ecs.entity import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
 import time
 from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
-from minference.ecs.entity import EntityRegistry
+
 import os
-import logging
-#set logging level to debug
-logging.basicConfig(level=logging.DEBUG)
+
 async def main():
     load_dotenv()
     EntityRegistry()
     CallableRegistry()
     oai_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
-    lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
-    anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
-    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
-    anthropic_model = "claude-3-5-sonnet-latest"
 
 
 
 
-    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits, litellm_request_limits=lite_llm_request_limits, anthropic_request_limits=anthropic_request_limits)
 
+
+    orchestrator = InferenceOrchestrator(oai_request_limits=oai_request_limits)
+    EntityRegistry.set_inference_orchestrator(orchestrator)
     json_schema = {
         "type": "object",
         "properties": {
@@ -46,7 +43,7 @@ async def main():
     def create_chats(client:LLMClient, model, response_formats : List[ResponseFormat]= [ResponseFormat.text], count=1) -> List[ChatThread]:
         chats : List[ChatThread] = []
         for response_format in response_formats:
-            llm_config=LLMConfig(client=client, model=model, response_format=response_format,max_tokens=1000)
+            llm_config=LLMConfig(client=client, model=model, response_format=response_format,max_tokens=1000,reasoner=True)
             for i in range(count):
                 chats.append(
                     ChatThread(
@@ -65,20 +62,22 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
-    litellm_chats = create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.tool],5)+create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.text],5)
-    anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.tool],5)+create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.text],5)
-    
+    # openai_chats = create_chats(LLMClient.openai, "o1-2024-12-17",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "o1-2024-12-17",[ResponseFormat.tool],1)
+
 
 
     # print(chats[0].llm_config)
     print("Running parallel completions...")
-    all_chats = openai_chats+ litellm_chats+anthropic_chats
     all_chats = openai_chats
+    all_chats = all_chats
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
- 
+    all_messages = EntityRegistry.list_by_type(ChatMessage)
+
+    print("messages object",all_messages)
+
 
 
     for chat in all_chats:
@@ -99,6 +98,6 @@ async def main():
 
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
-    #print mermaid graph of first chat
-    print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
-
+    print(EntityRegistry.list_by_type(Usage))
+    for chat in all_chats:
+        print(chat.history[-1])

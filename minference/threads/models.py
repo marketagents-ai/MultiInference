@@ -7,11 +7,11 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self, Annotated
 from enum import Enum
 
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field, model_validator, computed_field
+from pydantic import BaseModel, Field, model_validator, computed_field, ValidationInfo, AfterValidator
 from pathlib import Path
 import json
 from datetime import datetime
@@ -20,10 +20,9 @@ from jsonschema import validate
 from openai.types.chat import ChatCompletionToolParam
 from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam, CacheControlEphemeralParam
-from minference.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
+from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
 
-from minference.enregistry import EntityRegistry
-from minference.caregistry import (
+from minference.ecs.caregistry import (
     CallableRegistry,
     derive_input_schema,
     derive_output_schema,
@@ -51,187 +50,24 @@ from anthropic.types import (
     ToolResultBlockParam,
     Message as AnthropicMessage
 )
-T = TypeVar('T', bound='Entity')
 
-class Entity(BaseModel):
-    """
-    Base class for registry-integrated, serializable entities.
-    
-    This class provides:
-    1. Integration with EntityRegistry for persistence and retrieval
-    2. Basic serialization interface for saving/loading
-    3. Common entity attributes and operations
-    
-    Subclasses are responsible for:
-    1. Implementing custom serialization if needed (_custom_serialize/_custom_deserialize)
-    2. Handling any nested entities or complex relationships
-    3. Managing entity-specific validation and business logic
-    
-    All entities are immutable - modifications require creating new instances.
-    """
-    id: UUID = Field(
-        default_factory=uuid4,
-        description="Unique identifier for this entity instance"
-    )
-    
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        description="Timestamp when this entity was created"
-    )
-    
-    class Config:
-        # Add JSON encoders for UUID and datetime
-        json_encoders = {
-            UUID: str,  # Convert UUID to string
-            datetime: lambda v: v.isoformat()  # Convert datetime to ISO format string
-        }
-    
-    @model_validator(mode='after')
-    def register_entity(self) -> Self:
-        """Register this entity instance in the registry."""
-        registry = EntityRegistry
-        registry._logger.info(f"{self.__class__.__name__}({self.id}): Registering entity")
-        
-        try:
-            registry.register(self)
-            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully registered")
-        except Exception as e:
-            registry._logger.error(f"{self.__class__.__name__}({self.id}): Registration failed - {str(e)}")
-            raise ValueError(f"Entity registration failed: {str(e)}") from e
-            
-        return self
-    
-    def _custom_serialize(self) -> Dict[str, Any]:
-        """
-        Custom serialization hook for subclasses.
-        
-        Override this method to add custom serialization logic.
-        The result will be included in the serialized output under 'custom_data'.
-        
-        Returns:
-            Dict containing any custom serialized data
-        """
-        return {}
-        
-    @classmethod
-    def _custom_deserialize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Custom deserialization hook for subclasses.
-        
-        Override this method to handle custom deserialization logic.
-        The input comes from the 'custom_data' field in serialized data.
-        
-        Args:
-            data: Custom data from serialized entity
-            
-        Returns:
-            Dict of deserialized fields to include in entity initialization
-        """
-        return {}
-    
-    def save(self, path: Path) -> None:
-        """
-        Save this entity instance to a file.
-        
-        Args:
-            path: Path where to save the entity
-            
-        Raises:
-            IOError: If saving fails
-        """
-        registry = EntityRegistry
-        registry._logger.info(f"{self.__class__.__name__}({self.id}): Saving to {path}")
-        
-        try:
-            # Get base serialization
-            data = self.model_dump()
-            
-            # Add metadata
-            metadata = {
-                "entity_type": self.__class__.__name__,
-                "schema_version": "1.0",
-                "saved_at": datetime.utcnow().isoformat()
-            }
-            
-            # Get custom data
-            custom_data = self._custom_serialize()
-            
-            # Combine all
-            serialized = {
-                "metadata": metadata,
-                "data": data,
-                "custom_data": custom_data
-            }
-            
-            # Save
-            with open(path, 'w') as f:
-                json.dump(serialized, f, indent=2)
-                
-            registry._logger.info(f"{self.__class__.__name__}({self.id}): Successfully saved")
-            
-        except Exception as e:
-            registry._logger.error(f"{self.__class__.__name__}({self.id}): Save failed - {str(e)}")
-            raise IOError(f"Failed to save entity: {str(e)}") from e
-    
-    @classmethod
-    def load(cls: Type[T], path: Path) -> T:
-        """
-        Load an entity instance from a file.
-        
-        Args:
-            path: Path to the saved entity
-            
-        Returns:
-            Loaded entity instance
-            
-        Raises:
-            IOError: If loading fails
-            ValueError: If data validation fails
-        """
-        registry = EntityRegistry
-        registry._logger.info(f"{cls.__name__}: Loading from {path}")
-        
-        try:
-            # Load file
-            with open(path) as f:
-                serialized = json.load(f)
-                
-            # Verify entity type
-            metadata = serialized["metadata"]
-            if metadata["entity_type"] != cls.__name__:
-                raise ValueError(
-                    f"Entity type mismatch. File contains {metadata['entity_type']}, "
-                    f"expected {cls.__name__}"
-                )
-                
-            # Get base and custom data
-            base_data = serialized["data"]
-            custom_data = cls._custom_deserialize(serialized.get("custom_data", {}))
-            
-            # Create instance
-            instance = cls(**{**base_data, **custom_data})
-            registry._logger.info(f"{cls.__name__}({instance.id}): Successfully loaded")
-            return instance
-            
-        except Exception as e:
-            registry._logger.error(f"{cls.__name__}: Load failed - {str(e)}")
-            raise IOError(f"Failed to load entity: {str(e)}") from e
-            
-    @classmethod
-    def get(cls: Type[T], entity_id: UUID) -> Optional[T]:
-        """Get an entity instance from the registry."""
-        return EntityRegistry.get(entity_id, expected_type=cls)
-        
-    @classmethod
-    def list_all(cls: Type[T]) -> List[T]:
-        """List all entities of this type."""
-        return EntityRegistry.list_by_type(cls)
-        
-    @classmethod
-    def get_many(cls: Type[T], entity_ids: List[UUID]) -> List[T]:
-        """Get multiple entities by their IDs."""
-        return EntityRegistry.get_many(entity_ids, expected_type=cls)
+from typing import List, Optional, Dict, Any, Union, Tuple, Self, TypeVar, Type, Generic, Callable, Literal
+from typing_extensions import Literal
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+    ChatCompletionToolChoiceOptionParam,
+)
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice, ChatCompletion
+from openai.types.completion_usage import CompletionUsage
+from openai.types.chat.chat_completion import Choice
 
+from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
+
+T_Self = TypeVar('T_Self', bound='CallableTool')
 
 class CallableTool(Entity):
     """
@@ -244,7 +80,7 @@ class CallableTool(Entity):
     
     Any modifications require creating new instances with new UUIDs.
     """    
-    name: str = Field(
+    name: Annotated[str, AfterValidator(lambda x: x)] = Field(
         description="Registry name for the callable function",
         min_length=1
     )
@@ -282,7 +118,8 @@ class CallableTool(Entity):
                     "docstring": "Multiplies two numbers together",
                     "callable_text": "def multiply(x: float, y: float) -> float:\n    return x * y"
                 }
-            ]
+            ],
+            "populate_by_name": True
         }
     }
     
@@ -403,39 +240,55 @@ class CallableTool(Entity):
             callable_text=source
         )
 
-    @model_validator(mode='after')
-    def validate_schemas_and_callable(self) -> Self:
-        """Validates the tool's schemas and ensures its callable is registered."""
+    @model_validator(mode='before')
+    def validate_schemas_and_callable(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validates the tool's schemas and ensures its callable is registered. Must run before entity registration."""
+        # Ensure we have a valid name
+        name = data.get('name')
+        if not isinstance(name, str):
+            raise ValueError("Tool name must be a string")
+            
         # Get or register the function
-        func_name, func = self._get_or_register_function(
-            name=self.name,
-            callable_text=self.callable_text
+        func_name, func = cls._get_or_register_function(
+            name=name,
+            callable_text=data.get('callable_text')
         )
         
         # Store text representation if not provided
-        if not self.callable_text:
+        if not data.get('callable_text'):
             try:
-                self.callable_text = inspect.getsource(func)
+                data['callable_text'] = inspect.getsource(func)
             except (TypeError, OSError):
-                self.callable_text = str(func)
+                data['callable_text'] = str(func)
         
-        # Derive and validate schemas
-        derived_input = derive_input_schema(func)
-        derived_output = derive_output_schema(func)
+        # Check if function is already registered
+        registry = CallableRegistry
+        existing_info = registry.get_info(name)
         
-        # Validate and set input schema
-        if self.input_schema:
-            validate_schema_compatibility(derived_input, self.input_schema)
+        if existing_info:
+            # Function exists, preserve its schemas
+            if not data.get('input_schema'):
+                data['input_schema'] = existing_info.input_schema
+            if not data.get('output_schema'):
+                data['output_schema'] = existing_info.output_schema
         else:
-            self.input_schema = derived_input
+            # New function, derive and validate schemas
+            derived_input = derive_input_schema(func)
+            derived_output = derive_output_schema(func)
             
-        # Validate and set output schema
-        if self.output_schema:
-            validate_schema_compatibility(derived_output, self.output_schema)
-        else:
-            self.output_schema = derived_output
+            # Validate and set input schema
+            if data.get('input_schema'):
+                validate_schema_compatibility(derived_input, data['input_schema'])
+            else:
+                data['input_schema'] = derived_input
+                
+            # Validate and set output schema
+            if data.get('output_schema'):
+                validate_schema_compatibility(derived_output, data['output_schema'])
+            else:
+                data['output_schema'] = derived_output
             
-        return self
+        return data
     
     def _custom_serialize(self) -> Dict[str, Any]:
         """Serialize the callable-specific data."""
@@ -526,6 +379,19 @@ class CallableTool(Entity):
             )
         return None
         
+    def fork(self: T_Self, **kwargs: Any) -> T_Self:
+        """
+        Override fork to preserve schemas when creating new versions.
+        """
+        # Preserve schemas if not explicitly changed
+        if 'input_schema' not in kwargs:
+            kwargs['input_schema'] = self.input_schema
+        if 'output_schema' not in kwargs:
+            kwargs['output_schema'] = self.output_schema
+            
+        # Call parent fork with preserved schemas
+        return super().fork(**kwargs)
+
 class StructuredTool(Entity):
     """
     Entity representing a tool for structured output with schema validation and LLM integration.
@@ -683,12 +549,33 @@ class StructuredTool(Entity):
             strict_schema=strict_schema
         )
 
+    @model_validator(mode='before')
+    def validate_history(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-validate to ensure history contains proper ChatMessage objects"""
+        EntityRegistry._logger.debug(f"Starting history validation for ChatThread")
+        
+        if 'history' in values and isinstance(values['history'], list):
+            EntityRegistry._logger.info(f"Processing history list with {len(values['history'])} messages")
+            history = []
+            for idx, msg in enumerate(values['history']):
+                EntityRegistry._logger.debug(f"Processing message {idx}: {type(msg)}")
+                if isinstance(msg, dict):
+                    EntityRegistry._logger.debug(f"Converting dict to ChatMessage: {msg}")
+                    msg = ChatMessage.model_validate(msg)
+                history.append(msg)
+            EntityRegistry._logger.info(f"History validation complete - processed {len(history)} messages")
+            values['history'] = history
+        else:
+            EntityRegistry._logger.debug("No history found or history is not a list")
+        return values
+
 class LLMClient(str, Enum):
     openai = "openai"
     azure_openai = "azure_openai"
     anthropic = "anthropic"
     vllm = "vllm"
     litellm = "litellm"
+    openrouter = "openrouter"
 
 class ResponseFormat(str, Enum):
     json_beg = "json_beg"
@@ -744,6 +631,16 @@ class LLMConfig(Entity):
         description="Whether to use response caching"
     )
 
+    reasoner: bool = Field(
+        default=False,
+        description="Whether to use reasoning"
+    )
+
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description="The effort level for reasoning"
+    )
+
     @model_validator(mode="after")
     def validate_response_format(self) -> Self:
         """Validate response format compatibility with selected client."""
@@ -757,6 +654,9 @@ class LLMConfig(Entity):
                 f"Anthropic does not support structured_output response format. "
                 "Use json_beg or tool instead"
             )
+        
+        if self.reasoner and self.client != LLMClient.openai:
+            raise ValueError("Reasoning response format is only supported for OpenAI 01 and 03")
             
         return self
 
@@ -784,7 +684,7 @@ class ChatMessage(Entity):
         description="UUID of the author of the message"
     )
 
-    chat_thread_uuid: Optional[UUID] = Field(
+    chat_thread_id: Optional[UUID] = Field(
         default=None,
         description="UUID of the chat thread this message belongs to"
     )
@@ -905,6 +805,9 @@ class SystemPrompt(Entity):
 
 class Usage(Entity):
     """Tracks token usage for LLM interactions."""
+    model: str = Field(
+        description="The model used for the interaction"
+    )
     prompt_tokens: int = Field(
         description="Number of tokens in the prompt"
     )
@@ -957,6 +860,39 @@ class GeneratedJsonObject(Entity):
         description="Associated tool call ID if generated via tool"
     )
 
+
+
+
+class DeepSeekChatCompletionMessage(ChatCompletionMessage):
+    """Extended ChatCompletionMessage to include DeepSeek-specific fields."""
+    reasoning: Optional[str] = None
+    """DeepSeek-specific reasoning field explaining the model's thought process."""
+
+class DeepSeekChoice(Choice):
+    """Extended Choice to use DeepSeekChatCompletionMessage."""
+    message: DeepSeekChatCompletionMessage
+    """A chat completion message generated by the model, with DeepSeek extensions."""
+
+class DeepSeekChatCompletion(ChatCompletion):
+    """Extended ChatCompletion model to handle DeepSeek-specific fields."""
+    id: str
+    """A unique identifier for the chat completion."""
+
+    choices: List[DeepSeekChoice]
+    """A list of chat completion choices with DeepSeek extensions."""
+
+    created: int
+    """The Unix timestamp (in seconds) of when the chat completion was created."""
+
+    model: str
+    """The model used for the chat completion."""
+
+    object: Literal["chat.completion"]
+    """The object type, which is always `chat.completion`."""
+
+    usage: Optional[CompletionUsage] = None
+    """Usage statistics for the completion request."""
+
 class RawOutput(Entity):
     """Raw output from LLM API calls with metadata."""
     raw_result: Dict[str, Any] = Field(
@@ -973,7 +909,11 @@ class RawOutput(Entity):
     )
     chat_thread_id: Optional[UUID] = Field(
         default=None,
-        description="ID of the associated chat thread"
+        description="ID of the associated chat thread, can be used to retrieve from registry a frozen copy of the chat thread at creation time"
+    )
+    chat_thread_live_id: Optional[UUID] = Field(
+        default=None,
+        description="Live ID of the associated chat thread"
     )
     client: LLMClient = Field(
         description="The LLM client used for this call"
@@ -1031,7 +971,17 @@ class RawOutput(Entity):
 
         provider = self.result_provider
         try:
-            if provider == LLMClient.openai:
+            # Try DeepSeek format first for OpenRouter responses
+            if provider == LLMClient.openrouter:
+                try:
+                    result = DeepSeekChatCompletion.model_validate(self.raw_result)
+                    self.parsed_result = self._parse_oai_completion(result)
+                except:
+                    # Fall back to standard OpenAI format
+                    result = ChatCompletion.model_validate(self.raw_result)
+                    self.parsed_result = self._parse_oai_completion(result)
+            # Handle other providers as before
+            elif provider == LLMClient.openai:
                 self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             elif provider == LLMClient.anthropic:
                 self.parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
@@ -1054,6 +1004,9 @@ class RawOutput(Entity):
         """Identify LLM provider from result structure."""
         try:
             ChatCompletion.model_validate(self.raw_result)
+            # Check if it's specifically OpenRouter
+            if "openrouter" in getattr(self.raw_result, "model", "").lower():
+                return LLMClient.openrouter
             return LLMClient.openai
         except:
             try:
@@ -1078,10 +1031,16 @@ class RawOutput(Entity):
                     return None
             return None
 
-    def _parse_oai_completion(self, chat_completion: ChatCompletion) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
-        """Parse OpenAI completion format."""
-        message = chat_completion.choices[0].message
-        content = message.content
+    def _parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
+        """Parse OpenAI or DeepSeek completion format."""
+        choice = chat_completion.choices[0]
+        message = choice.message
+        
+        # Handle DeepSeek's reasoning field if present
+        if isinstance(chat_completion, DeepSeekChatCompletion) and isinstance(message, DeepSeekChatCompletionMessage):
+            content = f"<think>{message.reasoning}</think>\n{message.content}" if message.reasoning else message.content
+        else:
+            content = message.content
 
         json_object = None
         usage = None
@@ -1113,8 +1072,8 @@ class RawOutput(Entity):
 
         # Extract usage information
         if chat_completion.usage:
-
             usage = Usage(
+                model=chat_completion.model,
                 prompt_tokens=chat_completion.usage.prompt_tokens,
                 completion_tokens=chat_completion.usage.completion_tokens,
                 total_tokens=chat_completion.usage.total_tokens,
@@ -1124,8 +1083,7 @@ class RawOutput(Entity):
                 rejected_prediction_tokens=chat_completion.usage.completion_tokens_details.rejected_prediction_tokens if chat_completion.usage.completion_tokens_details else None,
                 cached_tokens=chat_completion.usage.prompt_tokens_details.cached_tokens if chat_completion.usage.prompt_tokens_details else None
             )
-        EntityRegistry._logger.info(f"Parsed OpenAI completion:  {json_object.name if json_object else None}, {usage}")
-
+        EntityRegistry._logger.info(f"Parsed OpenAI completion: {json_object.name if json_object else None}, {usage}")
 
         return content, json_object, usage, None
 
@@ -1138,8 +1096,6 @@ class RawOutput(Entity):
         if message.content:
             text_block = next((block for block in message.content 
                           if isinstance(block, TextBlock) and block.text.strip()), None)
-            
-
             tool_block = next((block for block in message.content 
                           if isinstance(block, ToolUseBlock)), None)
             # Check if it's a TextBlock
@@ -1176,6 +1132,7 @@ class RawOutput(Entity):
 
         if hasattr(message, 'usage'):
             usage = Usage(
+                model=message.model,
                 prompt_tokens=message.usage.input_tokens,
                 completion_tokens=message.usage.output_tokens,
                 total_tokens=message.usage.input_tokens + message.usage.output_tokens,
@@ -1189,8 +1146,12 @@ class RawOutput(Entity):
     def create_processed_output(self) -> 'ProcessedOutput':
         """Create a ProcessedOutput from this raw output."""
         content, json_object, usage, error = self._parse_result()
-        if (json_object is None and content is None) or self.chat_thread_id is None:
+        if (json_object is None and content is None) is None:
             raise ValueError("No content or JSON object found in raw output")
+        if self.chat_thread_id is None:
+            raise ValueError("Chat thread ID is required to create a ProcessedOutput")
+        if self.chat_thread_live_id is None:
+            raise ValueError("Chat thread live ID is required to create a ProcessedOutput")
    
         return ProcessedOutput(
             content=content,
@@ -1200,7 +1161,8 @@ class RawOutput(Entity):
             time_taken=self.time_taken,
             llm_client=self.client,
             raw_output=self,
-            chat_thread_id=self.chat_thread_id
+            chat_thread_id=self.chat_thread_id,
+            chat_thread_live_id=self.chat_thread_live_id
         )
     
 class ProcessedOutput(Entity):
@@ -1216,6 +1178,7 @@ class ProcessedOutput(Entity):
     llm_client: LLMClient
     raw_output: RawOutput
     chat_thread_id: UUID
+    chat_thread_live_id: UUID
     
 class ChatThread(Entity):
     """A chat thread entity managing conversation flow and message history."""
@@ -1311,6 +1274,8 @@ class ChatThread(Entity):
         content = self.system_prompt.content if self.system_prompt else ""
         if self.use_schema_instruction and self.forced_output and isinstance(self.forced_output, StructuredTool):
             content = "\n".join([content, self.forced_output.schema_instruction])
+        if self.llm_config.reasoner and self.llm_config.client == LLMClient.openai:
+            return {"role": "developer", "content": content} if content else None
         return {"role": "system", "content": content} if content else None
 
     @property
@@ -1358,9 +1323,14 @@ class ChatThread(Entity):
         EntityRegistry._logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
         messages = []
         
-        if self.system_prompt:
+        if self.system_prompt and not self.llm_config.reasoner:
             messages.append({
                 "role": "system",
+                "content": self.system_prompt.content
+            })
+        elif self.system_prompt and self.llm_config.reasoner:
+            messages.append({
+                "role": "developer",
                 "content": self.system_prompt.content
             })
         
@@ -1423,42 +1393,67 @@ class ChatThread(Entity):
         if self.forced_output and self.forced_output.name == tool_name:
             return self.forced_output
         return None
-
+    
+    # @entity_uuid_expander("self")
+    @entity_tracer
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        if not self.new_message and self.llm_config.response_format != ResponseFormat.auto_tools and self.llm_config.response_format != ResponseFormat.workflow:
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_user_message")
+        
+        if not self.new_message and self.llm_config.response_format not in [ResponseFormat.auto_tools, ResponseFormat.workflow]:
+            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add user message - no new message content")
             raise ValueError("Cannot add user message - no new message content")
-        elif not self.new_message and self.llm_config.response_format == ResponseFormat.auto_tools:
-            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in auto_tools mode")
+        elif not self.new_message:
+            EntityRegistry._logger.info(f"ChatThread({self.id}): Skipping user message - in {self.llm_config.response_format} mode")
             return None
-        elif not self.new_message and self.llm_config.response_format == ResponseFormat.workflow:
-            EntityRegistry._logger.info(f"Skipped adding user message to ChatThread({self.id}) since we are in workflow mode")
-            return None
-        assert self.new_message is not None, "Cannot add user message - no new message content"
+
+        parent_id = self.history[-1].id if self.history else None
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating user message with parent_id: {parent_id}")
+
         user_message = ChatMessage(
             role=MessageRole.user,
             content=self.new_message,
-            parent_message_uuid=self.history[-1].id if self.history else None
+            chat_thread_id=self.id,
+            parent_message_uuid=parent_id
         )
+        
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Created user message({user_message.id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Message content: {self.new_message[:100]}...")
+        
         self.history.append(user_message)
-        EntityRegistry._logger.info(f"Added user message({user_message.id}) to ChatThread({self.id})")
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Added user message to history. New history length: {len(self.history)}")
+        
         self.new_message = None
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Cleared new_message buffer")
+        
         return user_message
+    
+    @entity_tracer
+    def reset_workflow_step(self):
+        """Reset the workflow step to 0"""
+        self.workflow_step = 0
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Reset workflow step to 0")
 
+    @entity_tracer
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Adding chat turn from ProcessedOutput({output.id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
         
-        # Get the parent message - could be user, assistant, or tool message
+        # Get the parent message
+        
         if not self.history:
+            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add chat turn to empty history")
             raise ValueError("Cannot add chat turn to empty history")
-        parent_message = self.history[-1]
         
-        # Create assistant message with complete metadata
+        parent_message = self.history[-1]
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Parent message({parent_message.id}) role: {parent_message.role}")
+        
+        # Create assistant message
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating assistant message")
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
-            chat_thread_uuid=self.id,
+            chat_thread_id=self.id,
             parent_message_uuid=parent_message.id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
@@ -1468,23 +1463,24 @@ class ChatThread(Entity):
             tool_json_schema=self.forced_output.json_schema if self.forced_output and isinstance(self.forced_output, StructuredTool) else None,
             usage=output.usage
         )
-        self.history.append(assistant_message)
-        EntityRegistry._logger.info(f"Added assistant message({assistant_message.id}) with tool_call_id: {assistant_message.oai_tool_call_id}")
-
-
         
-        # Handle tool execution/validation if present
+        self.history.append(assistant_message)
+        EntityRegistry._logger.info(f"ChatThread({self.id}): Added assistant message({assistant_message.id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Assistant message details - tool_name: {assistant_message.tool_name}, tool_call_id: {assistant_message.oai_tool_call_id}")
+        
+        # Handle tool execution/validation
         if output.json_object and assistant_message:
             tool = self.get_tool_by_name(output.json_object.name)
             if tool:
+                EntityRegistry._logger.info(f"ChatThread({self.id}): Processing tool {tool.name} ({type(tool).__name__})")
                 try:
                     if isinstance(tool, StructuredTool):
-                        # Handle structured tool validation
+                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Validating structured tool input")
                         validation_result = tool.execute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps({"status": "validated", "message": "Schema validation successful"}),
-                            chat_thread_uuid=self.id,
+                            chat_thread_id=self.id,
                             tool_name=tool.name,
                             tool_uuid=tool.id,
                             tool_type="Structured",
@@ -1492,31 +1488,37 @@ class ChatThread(Entity):
                             parent_message_uuid=assistant_message.id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        self.history.append(tool_message)
-                        EntityRegistry._logger.info(f"Added tool validation message({tool_message.id}) with tool_call_id: {tool_message.oai_tool_call_id}")
+                        EntityRegistry._logger.info(f"ChatThread({self.id}): Validation successful")
                     
                     elif isinstance(tool, CallableTool):
-                        # Handle callable tool execution
+                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Executing callable tool")
                         tool_result = await tool.aexecute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps(tool_result),
-                            chat_thread_uuid=self.id,
+                            chat_thread_id=self.id,
                             tool_name=tool.name,
                             tool_uuid=tool.id,
                             tool_type="Callable",
                             parent_message_uuid=assistant_message.id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        self.history.append(tool_message)
-                        EntityRegistry._logger.info(f"Added tool execution message({tool_message.id}) with tool_call_id: {tool_message.oai_tool_call_id}")
+                        EntityRegistry._logger.info(f"ChatThread({self.id}): Tool execution successful")
                     
+
+                    
+                    self.history.append(tool_message)
+                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
+                    EntityRegistry._logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
+                    if self.workflow_step is not None and self.llm_config.response_format == ResponseFormat.workflow:
+                        "not checking if the excuted tool is the tool that was supposed to be executed - no idea how could this be tesxted"
+                        self.workflow_step += 1
                 except Exception as e:
-                    EntityRegistry._logger.error(f"Tool operation failed: {str(e)}")
+                    EntityRegistry._logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
                     error_message = ChatMessage(
                         role=MessageRole.tool,
                         content=json.dumps({"error": str(e)}),
-                        chat_thread_uuid=self.id,
+                        chat_thread_id=self.id,
                         tool_name=tool.name,
                         tool_uuid=tool.id,
                         tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
@@ -1524,8 +1526,9 @@ class ChatThread(Entity):
                         oai_tool_call_id=assistant_message.oai_tool_call_id
                     )
                     self.history.append(error_message)
-                    EntityRegistry._logger.info(f"Added error message({error_message.id}) for failed tool operation")
+                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added error message({error_message.id})")
         
+        EntityRegistry._logger.debug(f"ChatThread({self.id}): Completed add_chat_turn_history")
         return parent_message, assistant_message
     
     def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
@@ -1534,8 +1537,9 @@ class ChatThread(Entity):
             return None
             
         tools = []
-        for idx,tool in enumerate(self.tools):
-            if self.llm_config.client in [LLMClient.openai, LLMClient.vllm, LLMClient.litellm]:
+        for idx, tool in enumerate(self.tools):
+            # Add OpenRouter to the OpenAI-compatible clients
+            if self.llm_config.client in [LLMClient.openai, LLMClient.vllm, LLMClient.litellm, LLMClient.openrouter]:
                 tools.append(tool.get_openai_tool())
             elif self.llm_config.client == LLMClient.anthropic:
                 if idx == 0 and self.llm_config.use_cache:
@@ -1569,6 +1573,28 @@ class ChatThread(Entity):
             if message.role == MessageRole.assistant and message.usage:
                 usages.append(message.usage)
         return usages
+
+    @model_validator(mode='before')
+    def validate_history(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-validate to ensure history contains proper ChatMessage objects"""
+        if 'history' in values and isinstance(values['history'], list):
+            history = []
+            for msg in values['history']:
+                if isinstance(msg, dict):
+                    msg = ChatMessage.model_validate(msg)
+                history.append(msg)
+            values['history'] = history
+        return values
+    
+    def _apply_modifications_and_create_version(self, cold_snapshot: 'Entity', force: bool, **kwargs) -> bool:
+        """ calls the Entity class apply modifications and adds a patch to the message chat thread history ids"""
+        super()._apply_modifications_and_create_version(cold_snapshot, force, **kwargs)
+        new_parent_message_uuid = None
+        for message in self.history:
+            message.fork(chat_thread_id = self.id, parent_message_uuid = new_parent_message_uuid if new_parent_message_uuid else message.parent_message_uuid)
+            new_parent_message_uuid = message.id
+        return True
+
 
 
 
