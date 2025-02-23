@@ -149,7 +149,7 @@ async def main():
         new_message="How's the weather?",
         llm_config=LLMConfig(
             client=LLMClient.openai,
-            model="gpt-4",
+            model="gpt-4o-mini",
             response_format=ResponseFormat.text,
         )
     )
@@ -193,7 +193,7 @@ chat_1 = ChatThread(
     new_message="Hello from GPT4",
     llm_config=LLMConfig(
         client=LLMClient.openai,
-        model="gpt-4",
+        model="gpt-4o-mini",
         response_format=ResponseFormat.text
     )
 )
@@ -203,7 +203,7 @@ chat_2 = ChatThread(
     new_message="Hello from Claude",
     llm_config=LLMConfig(
         client=LLMClient.anthropic,
-        model="claude-2",
+        model="claude-3-5-sonnet-latest",
         response_format=ResponseFormat.text
     )
 )
@@ -257,7 +257,7 @@ chat = ChatThread(
     new_message="Compute stats for [1,2,3,4,5].",
     llm_config=LLMConfig(
         client=LLMClient.openai,
-        model="gpt-4",
+        model="gpt-4o-mini",
         response_format=ResponseFormat.tool
     ),
     forced_output=my_tool
@@ -296,7 +296,7 @@ chat = ChatThread(
     new_message="Analyze sentiment of 'Hello World'",
     llm_config=LLMConfig(
         client=LLMClient.openai,
-        model="gpt-4",
+        model="gpt-4o-mini",
         response_format=ResponseFormat.structured_output
     ),
     forced_output=structured_tool
@@ -322,7 +322,7 @@ chat = ChatThread(
     new_message="Perform steps in sequence on data: [1,2,3,4,5]",
     llm_config=LLMConfig(
         client=LLMClient.openai,
-        model="gpt-4",
+        model="gpt-4o-mini",
         response_format=ResponseFormat.workflow
     ),
     tools=tools
