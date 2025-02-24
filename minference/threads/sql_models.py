@@ -103,26 +103,29 @@ class GeneratedJsonObjectSQL(SQLModel, table=True):
     __table_args__ = {'extend_existing': True}
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="generatedjsonobjectsql.id")
     name: str
     object: Dict[str, Any] = Field(sa_column=Column(JSON))
     tool_call_id: Optional[str] = None
-    processed_outputs: List["ProcessedOutputSQL"] = Relationship(
-        back_populates="json_object",
-        link_model=OutputJsonObjectLinkageSQL
-    )
 
     def to_entity(self) -> GeneratedJsonObject:
         return GeneratedJsonObject(
             id=self.id,
+            lineage_id=self.lineage_id,
+            parent_id=self.parent_id,
             name=self.name,
             object=self.object,
-            tool_call_id=self.tool_call_id
+            tool_call_id=self.tool_call_id,
+            from_storage=True
         )
 
     @classmethod
     def from_entity(cls, entity: GeneratedJsonObject) -> "GeneratedJsonObjectSQL":
         return cls(
             id=entity.id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
             name=entity.name,
             object=entity.object,
             tool_call_id=entity.tool_call_id
@@ -168,7 +171,8 @@ class UsageSQL(SQLModel, table=True):
             total_tokens=self.total_tokens,
             cache_creation_input_tokens=self.cache_creation_input_tokens,
             cache_read_input_tokens=self.cache_read_input_tokens,
-            model=self.model
+            model=self.model,
+            from_storage=True
         )
 
     @classmethod
@@ -203,13 +207,15 @@ class ChatMessageSQL(SQLModel, table=True):
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="chatmessagesql.id")
 
+    # Message threading field (different from versioning)
+    parent_message_uuid: Optional[UUID] = Field(default=None, foreign_key="chatmessagesql.id")
+
     # Message content
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     role: str = Field(sa_column=Column(SQLAlchemyString))
     content: str
     author_uuid: Optional[UUID] = None
     chat_thread_id: Optional[UUID] = None
-    parent_message_uuid: Optional[UUID] = None
 
     # Tool-related fields
     tool_name: Optional[str] = None
@@ -237,20 +243,21 @@ class ChatMessageSQL(SQLModel, table=True):
         return ChatMessage(
             id=self.id,
             lineage_id=self.lineage_id,
-            parent_id=self.parent_id,
+            parent_id=self.parent_id,  # Versioning parent
+            parent_message_uuid=self.parent_message_uuid,  # Threading parent
             timestamp=self.timestamp,
             role=MessageRole(self.role),
             content=self.content,
             author_uuid=self.author_uuid,
             chat_thread_id=self.chat_thread_id,
-            parent_message_uuid=self.parent_message_uuid,
             tool_name=self.tool_name,
             tool_uuid=self.tool_uuid,
             tool_type=self.tool_type,
             oai_tool_call_id=self.oai_tool_call_id,
             tool_json_schema=self.tool_json_schema,
             tool_call=self.tool_call,
-            usage=self.usage.to_entity() if self.usage else None
+            usage=self.usage.to_entity() if self.usage else None,
+            from_storage=True
         )
 
     @classmethod
@@ -259,13 +266,13 @@ class ChatMessageSQL(SQLModel, table=True):
         return cls(
             id=entity.id,
             lineage_id=entity.lineage_id,
-            parent_id=entity.parent_id,
+            parent_id=entity.parent_id,  # Versioning parent
+            parent_message_uuid=entity.parent_message_uuid,  # Threading parent
             timestamp=entity.timestamp,
             role=entity.role.value,
             content=entity.content,
             author_uuid=entity.author_uuid,
             chat_thread_id=entity.chat_thread_id,
-            parent_message_uuid=entity.parent_message_uuid,
             tool_name=entity.tool_name,
             tool_uuid=entity.tool_uuid,
             tool_type=entity.tool_type,
@@ -320,6 +327,7 @@ class ToolSQL(SQLModel, table=True):
             "lineage_id": self.lineage_id,
             "parent_id": self.parent_id,
             "name": self.name,
+            "from_storage": True
         }
         
         if self.callable_text is not None:
@@ -384,22 +392,20 @@ class SystemPromptSQL(SQLModel, table=True):
     # Versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = None
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="systempromptsql.id")
 
     # Domain
     name: str
     content: str
 
-    ###########################################################################
-    # Mappers
-    ###########################################################################
     def to_entity(self) -> SystemPrompt:
         return SystemPrompt(
             id=self.id,
             lineage_id=self.lineage_id,
             parent_id=self.parent_id,
             name=self.name,
-            content=self.content
+            content=self.content,
+            from_storage=True
         )
 
     @classmethod
@@ -449,7 +455,8 @@ class LLMConfigSQL(SQLModel, table=True):
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             response_format=ResponseFormat(self.response_format),  # Convert string to enum
-            use_cache=self.use_cache
+            use_cache=self.use_cache,
+            from_storage=True
         )
 
     @classmethod
@@ -478,8 +485,10 @@ class RawOutputSQL(SQLModel, table=True):
     __table_args__ = {'extend_existing': True}
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="rawoutputsql.id")
     raw_result: Dict[str, Any] = Field(sa_column=Column(JSON))
-    completion_kwargs: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # Changed to non-optional with default
+    completion_kwargs: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     chat_thread_id: Optional[UUID] = Field(default=None, foreign_key="chatthreadsql.id")
     start_time: float
     end_time: float
@@ -488,20 +497,25 @@ class RawOutputSQL(SQLModel, table=True):
     def to_entity(self) -> RawOutput:
         return RawOutput(
             id=self.id,
+            lineage_id=self.lineage_id,
+            parent_id=self.parent_id,
             raw_result=self.raw_result,
-            completion_kwargs=self.completion_kwargs,  # Now always a dict
+            completion_kwargs=self.completion_kwargs,
             chat_thread_id=self.chat_thread_id,
             start_time=self.start_time,
             end_time=self.end_time,
-            client=LLMClient(self.client)
+            client=LLMClient(self.client),
+            from_storage=True
         )
 
     @classmethod
     def from_entity(cls, entity: RawOutput) -> "RawOutputSQL":
         return cls(
             id=entity.id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
             raw_result=entity.raw_result,
-            completion_kwargs=entity.completion_kwargs or {},  # Use empty dict if None
+            completion_kwargs=entity.completion_kwargs or {},
             chat_thread_id=entity.chat_thread_id,
             start_time=entity.start_time,
             end_time=entity.end_time,
@@ -522,14 +536,14 @@ class ProcessedOutputSQL(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = None
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="processedoutputsql.id")
 
     content: Optional[str] = None
     json_object_id: Optional[UUID] = Field(default=None, foreign_key="generatedjsonobjectsql.id")
     usage_id: Optional[UUID] = Field(default=None, foreign_key="usagesql.id")
     error: Optional[str] = None
     time_taken: float
-    llm_client: LLMClient
+    llm_client: str = Field(sa_column=Column(SQLAlchemyString))
 
     # Relationship to raw output
     raw_output_id: Optional[UUID] = Field(default=None, foreign_key="rawoutputsql.id")
@@ -543,9 +557,6 @@ class ProcessedOutputSQL(SQLModel, table=True):
     json_object: Optional[GeneratedJsonObjectSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
     usage: Optional[UsageSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
 
-    ###########################################################################
-    # Mappers
-    ###########################################################################
     def to_entity(self) -> ProcessedOutput:
         raw = self.raw_output.to_entity() if self.raw_output else None
         if not raw:
@@ -560,10 +571,11 @@ class ProcessedOutputSQL(SQLModel, table=True):
             usage=self.usage.to_entity() if self.usage else None,
             error=self.error,
             time_taken=self.time_taken,
-            llm_client=self.llm_client,
+            llm_client=LLMClient(self.llm_client),
             raw_output=raw,
             chat_thread_id=self.chat_thread_id,
-            chat_thread_live_id=self.chat_thread_live_id
+            chat_thread_live_id=self.chat_thread_live_id,
+            from_storage=True
         )
 
     @classmethod
@@ -575,7 +587,7 @@ class ProcessedOutputSQL(SQLModel, table=True):
             content=ent.content,
             error=ent.error,
             time_taken=ent.time_taken,
-            llm_client=ent.llm_client,
+            llm_client=ent.llm_client.value,
             chat_thread_id=ent.chat_thread_id,
             chat_thread_live_id=ent.chat_thread_live_id,
             json_object_id=ent.json_object.id if (ent.json_object and ent.json_object.id) else None,
@@ -671,7 +683,8 @@ class ChatThreadSQL(SQLModel, table=True):
             forced_output=forced_output_entity,
             llm_config=llm_config_ent,
             tools=tool_entities,
-            workflow_step=self.workflow_step
+            workflow_step=self.workflow_step,
+            from_storage=True
         )
 
     @classmethod
