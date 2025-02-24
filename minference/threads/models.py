@@ -1588,8 +1588,3 @@ class ChatThread(Entity):
                 history.append(msg)
             values['history'] = history
         return values
-
-
-
-
-

@@ -66,7 +66,7 @@ class Entity(BaseModel):
     parent_id: Optional[UUID] = None
     lineage_id: UUID = Field(default_factory=uuid4)
     old_ids: List[UUID] = Field(default_factory=list)
-
+    from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage when loaded from storage as acold object we do not re-register the entity")
     class Config:
         json_encoders = {
             UUID: str,
@@ -74,10 +74,9 @@ class Entity(BaseModel):
         }
 
     def register_entity(self: "Entity") -> "Entity":
-        from __main__ import EntityRegistry
         if not EntityRegistry.has_entity(self.id):
             EntityRegistry.register(self)
-        else:
+        elif not self.from_storage:
             cold = EntityRegistry.get_cold_snapshot(self.id)
             if cold and self.has_modifications(cold):
                 self.fork()
@@ -85,13 +84,7 @@ class Entity(BaseModel):
 
     @model_validator(mode='after')
     def _auto_register(self) -> Self:
-        from __main__ import EntityRegistry
-        if not EntityRegistry.has_entity(self.id):
-            EntityRegistry.register(self)
-        else:
-            cold = EntityRegistry.get_cold_snapshot(self.id)
-            if cold and self.has_modifications(cold):
-                self.fork()
+        entity = self.register_entity()
         return self
 
     def fork(self, force: bool = False, **kwargs: Any) -> "Entity":
@@ -379,6 +372,7 @@ try:
                 "parent_id": self.parent_id,
                 "created_at": self.created_at,
                 "old_ids": self.old_ids,
+                "from_storage": True,
                 **self.data
             }
             return cls_obj(**combined)
