@@ -7,7 +7,7 @@ This module provides:
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
 """
-from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self, Annotated
+from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self, Annotated, cast
 from enum import Enum
 
 from uuid import UUID, uuid4
@@ -389,8 +389,8 @@ class CallableTool(Entity):
         if 'output_schema' not in kwargs:
             kwargs['output_schema'] = self.output_schema
             
-        # Call parent fork with preserved schemas
-        return super().fork(**kwargs)
+        # Call parent fork with preserved schemas and cast return type
+        return cast(T_Self, super().fork(**kwargs))
 
 class StructuredTool(Entity):
     """
@@ -740,7 +740,8 @@ class ChatMessage(Entity):
     def get_parent(self) -> Optional['ChatMessage']:
         """Get the parent message if it exists."""
         if self.parent_message_uuid:
-            return ChatMessage.get(self.parent_message_uuid)
+            # Cast the returned Entity to ChatMessage
+            return cast(Optional['ChatMessage'], ChatMessage.get(self.parent_message_uuid))
         return None
 
     def get_tool(self) -> Optional[Union['CallableTool', 'StructuredTool']]:
@@ -749,9 +750,11 @@ class ChatMessage(Entity):
             return None
         
         if self.tool_type == "Callable":
-            return CallableTool.get(self.tool_uuid)
+            # Cast the returned Entity to CallableTool
+            return cast(Optional['CallableTool'], CallableTool.get(self.tool_uuid))
         elif self.tool_type == "Structured":
-            return StructuredTool.get(self.tool_uuid)
+            # Cast the returned Entity to StructuredTool
+            return cast(Optional['StructuredTool'], StructuredTool.get(self.tool_uuid))
         return None
     
 
@@ -1585,15 +1588,6 @@ class ChatThread(Entity):
                 history.append(msg)
             values['history'] = history
         return values
-    
-    def _apply_modifications_and_create_version(self, cold_snapshot: 'Entity', force: bool, **kwargs) -> bool:
-        """ calls the Entity class apply modifications and adds a patch to the message chat thread history ids"""
-        super()._apply_modifications_and_create_version(cold_snapshot, force, **kwargs)
-        new_parent_message_uuid = None
-        for message in self.history:
-            message.fork(chat_thread_id = self.id, parent_message_uuid = new_parent_message_uuid if new_parent_message_uuid else message.parent_message_uuid)
-            new_parent_message_uuid = message.id
-        return True
 
 
 
