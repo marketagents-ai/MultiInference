@@ -1,13 +1,14 @@
 ############################################################
-# entity.py
+# entity.py - Refactored version with unified entity comparison
 ############################################################
 
 import json
 import inspect
 import logging
+import re
 from typing import (
     Any, Dict, Optional, Type, TypeVar, List, Protocol, runtime_checkable,
-    Union, Callable, get_args, cast, Self
+    Union, Callable, get_args, cast, Self, Tuple, Set
 )
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -31,7 +32,187 @@ class BaseRegistry:
 
 
 ##############################
-# 2) The Entity + Diff
+# 2) Unified Comparison Function
+##############################
+
+def compare_values(v1: Any, v2: Any, path: str = "", diffs: Optional[Dict[str, Dict[str, Any]]] = None,
+                  visited: Optional[Set[Tuple[int, int]]] = None) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+    """Enhanced comparison with better handling of SQL serialization edge cases."""
+    # Initialize containers
+    if diffs is None:
+        diffs = {}
+    if visited is None:
+        visited = set()
+    
+    # Handle identity comparison
+    if v1 is v2:
+        return True, diffs
+    
+    # Prevent cycles 
+    obj_pair = (id(v1), id(v2))
+    if obj_pair in visited:
+        return True, diffs
+    visited.add(obj_pair)
+    
+    # Handle None values
+    if v1 is None or v2 is None:
+        if v1 is not v2:
+            diffs[path] = {"type": "modified", "old": v2, "new": v1}
+            return False, diffs
+        return True, diffs
+    
+    # Handle type differences with special cases for SQL
+    if type(v1) != type(v2):
+        # Special case: str vs UUID (common in SQL backends)
+        if (isinstance(v1, (str, UUID)) and isinstance(v2, (str, UUID))):
+            try:
+                if str(v1) == str(v2):
+                    return True, diffs
+            except:
+                pass
+        
+        diffs[path] = {"type": "type_mismatch", "old_type": type(v2).__name__, "new_type": type(v1).__name__}
+        return False, diffs
+    
+    # Entity comparison logic
+    if isinstance(v1, Entity) and isinstance(v2, Entity):
+        # Different entities
+        if v1.id != v2.id:
+            diffs[path] = {"type": "entity_changed", "old_id": v2.id, "new_id": v1.id}
+            return False, diffs
+        
+        # Field comparison with exclusions
+        exclude = {'id', 'created_at', 'parent_id', 'live_id', 'old_ids', 'lineage_id', 'from_storage'}
+        fields1 = set(v1.model_fields.keys()) - exclude
+        fields2 = set(v2.model_fields.keys()) - exclude
+        
+        # Check for field structure changes
+        if fields1 != fields2:
+            added = fields1 - fields2
+            removed = fields2 - fields1
+            if added:
+                diffs[f"{path}.fields_added"] = {"type": "fields_added", "fields": list(added)}
+            if removed:
+                diffs[f"{path}.fields_removed"] = {"type": "fields_removed", "fields": list(removed)}
+            return False, diffs
+        
+        # Compare each field
+        changed = False
+        for f in fields1:
+            field_path = f"{path}.{f}" if path else f
+            f1 = getattr(v1, f)
+            f2 = getattr(v2, f)
+            equal, diffs = compare_values(f1, f2, field_path, diffs, visited)
+            if not equal:
+                changed = True
+        
+        return not changed, diffs
+    
+    # Floating point comparison with improved tolerance for SQL
+    elif isinstance(v1, (float, int)) and isinstance(v2, (float, int)):
+        # Use relative tolerance for larger numbers
+        if abs(float(v1)) > 1.0 or abs(float(v2)) > 1.0:
+            relative_diff = abs((float(v1) - float(v2)) / max(abs(float(v1)), abs(float(v2))))
+            if relative_diff <= 1e-6:  # 0.0001% difference
+                return True, diffs
+        # Use absolute tolerance for smaller numbers
+        elif abs(float(v1) - float(v2)) <= 1e-9:
+            return True, diffs
+            
+        diffs[path] = {"type": "modified", "old": v2, "new": v1}
+        return False, diffs
+    
+    # Datetime comparison with SQL-friendly tolerance
+    elif isinstance(v1, datetime) and isinstance(v2, datetime):
+        # Use 1 second tolerance for SQL serialization differences
+        if abs((v1 - v2).total_seconds()) <= 1.0:
+            return True, diffs
+        diffs[path] = {"type": "modified", "old": v2, "new": v1}
+        return False, diffs
+    
+    # String comparison with normalization for SQL
+    elif isinstance(v1, str) and isinstance(v2, str):
+        # Normalize whitespace and line endings
+        norm_v1 = v1.strip().replace('\r\n', '\n')
+        norm_v2 = v2.strip().replace('\r\n', '\n')
+        if norm_v1 == norm_v2:
+            return True, diffs
+            
+        diffs[path] = {"type": "modified", "old": v2, "new": v1}
+        return False, diffs
+    
+    # Dictionary comparison
+    elif isinstance(v1, dict) and isinstance(v2, dict):
+        keys1 = set(v1.keys())
+        keys2 = set(v2.keys())
+        
+        changed = False
+        
+        # Check for added/removed keys
+        if keys1 != keys2:
+            added = keys1 - keys2
+            removed = keys2 - keys1
+            
+            if added:
+                diffs[f"{path}.keys_added"] = {"type": "keys_added", "keys": list(added)}
+                changed = True
+            if removed:
+                diffs[f"{path}.keys_removed"] = {"type": "keys_removed", "keys": list(removed)}
+                changed = True
+                
+        # Check each key present in both
+        for k in keys1 & keys2:
+            key_path = f"{path}.{k}" if path else k
+            equal, diffs = compare_values(v1[k], v2[k], key_path, diffs, visited)
+            if not equal:
+                changed = True
+                
+        return not changed, diffs
+    
+    # List/tuple comparison
+    elif isinstance(v1, (list, tuple)) and isinstance(v2, (list, tuple)):
+        if len(v1) != len(v2):
+            diffs[path] = {"type": "length_mismatch", "old_len": len(v2), "new_len": len(v1)}
+            return False, diffs
+            
+        # For lists of entities, try to match by ID
+        if v1 and v2 and all(isinstance(x, Entity) for x in v1) and all(isinstance(x, Entity) for x in v2):
+            entities1 = {x.id: x for x in v1}
+            entities2 = {x.id: x for x in v2}
+            
+            if set(entities1.keys()) != set(entities2.keys()):
+                diffs[path] = {"type": "entity_set_changed", "old_ids": list(entities2.keys()), "new_ids": list(entities1.keys())}
+                return False, diffs
+                
+            changed = False
+            for eid, entity1 in entities1.items():
+                entity_path = f"{path}[{eid}]"
+                equal, diffs = compare_values(entity1, entities2[eid], entity_path, diffs, visited)
+                if not equal:
+                    changed = True
+                    
+            return not changed, diffs
+            
+        # For normal lists, compare items in order
+        changed = False
+        for i, (item1, item2) in enumerate(zip(v1, v2)):
+            item_path = f"{path}[{i}]"
+            equal, diffs = compare_values(item1, item2, item_path, diffs, visited)
+            if not equal:
+                changed = True
+                
+        return not changed, diffs
+    
+    # Default equality check for other types
+    elif v1 == v2:
+        return True, diffs
+        
+    # Values are different
+    diffs[path] = {"type": "modified", "old": v2, "new": v1}
+    return False, diffs
+
+##############################
+# 3) The Entity + Diff
 ##############################
 
 @runtime_checkable
@@ -57,8 +238,6 @@ class Entity(BaseModel):
     Subclasses are responsible for custom serialization logic,
     possibly nested relationships, etc.
     Snapshots + re-registration => auto-versioning if fields change in place.
-
-    NOTE: This is the original definition from your code, unchanged.
     """
     id: UUID = Field(default_factory=uuid4, description="Unique identifier")
     live_id: UUID = Field(default_factory=uuid4, description="Live/warm identifier")
@@ -66,7 +245,8 @@ class Entity(BaseModel):
     parent_id: Optional[UUID] = None
     lineage_id: UUID = Field(default_factory=uuid4)
     old_ids: List[UUID] = Field(default_factory=list)
-    from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage when loaded from storage as acold object we do not re-register the entity")
+    from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage")
+    
     class Config:
         json_encoders = {
             UUID: str,
@@ -74,78 +254,178 @@ class Entity(BaseModel):
         }
 
     def register_entity(self: "Entity") -> "Entity":
+        """Register this entity with the EntityRegistry."""
+        from __main__ import EntityRegistry
         if not EntityRegistry.has_entity(self.id):
             EntityRegistry.register(self)
         elif not self.from_storage:
             cold = EntityRegistry.get_cold_snapshot(self.id)
-            if cold and self.has_modifications(cold):
-                self.fork()
+            if cold:
+                is_equal, _ = compare_values(self, cold)
+                if not is_equal:
+                    self.fork()
         return self
 
     @model_validator(mode='after')
     def _auto_register(self) -> Self:
+        """Auto-register entity during initialization."""
         entity = self.register_entity()
         return self
 
-    def fork(self, force: bool = False, **kwargs: Any) -> "Entity":
+    def has_modifications(self, other: "Entity") -> bool:
+        """Check if entity has modifications compared to another entity."""
+        from __main__ import EntityRegistry
+        EntityRegistry._logger.debug(f"Checking modifications between {self.id} and {other.id}")
+        is_equal, _ = compare_values(self, other)
+        return not is_equal
+
+    def compute_diff(self, other: "Entity") -> EntityDiff:
+        """Compute a detailed difference structure between entities."""
+        from __main__ import EntityRegistry
+        EntityRegistry._logger.debug(f"Computing diff: {self.id} vs {other.id}")
+        
+        is_equal, diffs = compare_values(self, other)
+        
+        # Convert to EntityDiff format
+        result = EntityDiff()
+        for path, diff_info in diffs.items():
+            # Parse the path into field name
+            field = path.split('.')[0] if '.' in path else path
+            # Remove brackets if present (for list indices)
+            field = field.split('[')[0] if '[' in field else field
+            
+            result.add_diff(field, diff_info["type"], 
+                          old_value=diff_info.get("old"), 
+                          new_value=diff_info.get("new"))
+        return result
+
+    def fork(self, force: bool = False, diff_info: Optional[Dict[str, Dict[str, Any]]] = None, **kwargs: Any) -> "Entity":
+        """
+        Fork an entity with proper handling of nested entities.
+        
+        Args:
+            force: Whether to force forking even without changes
+            diff_info: Optional diff information from previous comparison
+            **kwargs: Additional attributes to set on the new fork
+        """
         from __main__ import EntityRegistry
         cold = EntityRegistry.get_cold_snapshot(self.id)
         if cold is None:
             EntityRegistry.register(self)
             return self
-
-        changed = False
+            
+        # Check modifications if we don't have diff_info yet
+        if diff_info is None:
+            is_equal, diff_info = compare_values(self, cold)
+            changed = not is_equal
+        else:
+            changed = bool(diff_info)
+            
+        # Apply any explicit changes
         if kwargs:
             changed = True
             for k, v in kwargs.items():
                 setattr(self, k, v)
-
-        if not force and not changed and not self.has_modifications(cold):
+                
+        # No changes detected
+        if not force and not changed:
             return self
-
+            
+        # Create the new fork with a new ID
         old_id = self.id
         self.id = uuid4()
         self.parent_id = old_id
         self.old_ids.append(old_id)
+        
+        # Handle nested entities that need forking
+        if diff_info:
+            self._fork_nested_entities(diff_info)
+            
+        # Register the new version
         EntityRegistry.register(self)
         return self
-
-    def has_modifications(self, other: "Entity") -> bool:
+    
+    def _fork_nested_entities(self, diff_info: Dict[str, Dict[str, Any]]) -> None:
+        """
+        Fork nested entities and update references to them.
+        Uses better error handling and detailed logging.
+        """
         from __main__ import EntityRegistry
-        EntityRegistry._logger.debug(f"Checking modifications between {self.id} and {other.id}")
-
-        exclude = {'id', 'created_at', 'parent_id', 'live_id', 'old_ids', 'lineage_id'}
-        self_fields = set(self.model_fields.keys()) - exclude
-        other_fields = set(other.model_fields.keys()) - exclude
-        if self_fields != other_fields:
-            return True
-
-        for f in self_fields:
-            val_self = getattr(self, f)
-            val_other = getattr(other, f)
-            if val_self != val_other:
-                return True
-        return False
-
-    def compute_diff(self, other: "Entity") -> EntityDiff:
-        from __main__ import EntityRegistry
-        EntityRegistry._logger.debug(f"Computing diff: {self.id} vs {other.id}")
-        diff = EntityDiff()
-        exclude = {'id','created_at','parent_id','live_id','old_ids','lineage_id'}
-        sfields = set(self.model_fields.keys()) - exclude
-        ofields = set(other.model_fields.keys()) - exclude
-
-        for f in sfields - ofields:
-            diff.add_diff(f, "added", new_value=getattr(self, f))
-        for f in ofields - sfields:
-            diff.add_diff(f, "removed", old_value=getattr(other, f))
-
-        for f in sfields & ofields:
-            sv = getattr(self, f)
-            ov = getattr(other, f)
-            if sv != ov:
-                diff.add_diff(f, "modified", old_value=ov, new_value=sv)
-        return diff
+        # Group diffs by top-level field
+        field_diffs = {}
+        for path, info in diff_info.items():
+            field = path.split('.')[0] if '.' in path else path
+            # Remove brackets if present (for list indices)
+            field = field.split('[')[0] if '[' in field else field
+            
+            if field not in field_diffs:
+                field_diffs[field] = {}
+            field_diffs[field][path] = info
+        
+        # Process each changed field with error handling
+        failures = {}
+        
+        # Process each changed field
+        for field, field_diff in field_diffs.items():
+            try:
+                value = getattr(self, field, None)
+                
+                # Fork nested entity
+                if isinstance(value, Entity):
+                    EntityRegistry._logger.debug(f"Processing nested entity field {field} of {type(self).__name__}({self.id})")
+                    # Only fork if there are nested changes beyond just the top path
+                    nested_changes = {p: d for p, d in field_diff.items() if p != field}
+                    if nested_changes:
+                        EntityRegistry._logger.info(f"Forking nested entity {type(value).__name__}({value.id}) in {field}")
+                        forked_entity = value.fork(diff_info=nested_changes)
+                        # Update the reference in parent to the new entity version
+                        setattr(self, field, forked_entity)
+                        EntityRegistry._logger.debug(f"Updated reference in {type(self).__name__}.{field}: {value.id} → {forked_entity.id}")
+                        
+                # Handle list of entities
+                elif isinstance(value, list) and value and all(isinstance(x, Entity) for x in value):
+                    EntityRegistry._logger.debug(f"Processing entity list field {field} with {len(value)} items")
+                    # Find which entities in the list have changes
+                    entity_changes = {}
+                    for path, info in field_diff.items():
+                        if '[' in path:  # List index path
+                            match = re.search(r'\[(.*?)\]', path)
+                            if match:
+                                entity_id = match.group(1)
+                                try:
+                                    # Try UUID parsing
+                                    if len(entity_id) > 8:  # Likely a UUID
+                                        # Find entity by ID
+                                        for i, entity in enumerate(value):
+                                            if str(entity.id) == entity_id:
+                                                if i not in entity_changes:
+                                                    entity_changes[i] = {}
+                                                entity_changes[i][path.replace(f"[{entity_id}]", "")] = info
+                                    # Try index parsing
+                                    else:
+                                        idx = int(entity_id)
+                                        if idx not in entity_changes:
+                                            entity_changes[idx] = {}
+                                        entity_changes[idx][path.replace(f"[{idx}]", "")] = info
+                                except ValueError:
+                                    EntityRegistry._logger.warning(f"Could not parse index from path: {path}")
+                    
+                    # Fork each changed entity
+                    for idx, changes in entity_changes.items():
+                        if idx < len(value):
+                            entity = value[idx]
+                            EntityRegistry._logger.info(f"Forking list item {idx} ({type(entity).__name__}({entity.id}))")
+                            forked_entity = entity.fork(diff_info=changes)
+                            # Update reference in the list
+                            value[idx] = forked_entity
+                            EntityRegistry._logger.debug(f"Updated reference in {type(self).__name__}.{field}[{idx}]: {entity.id} → {forked_entity.id}")
+            except Exception as e:
+                EntityRegistry._logger.error(f"Failed to fork nested entity {field}: {e}")
+                failures[field] = str(e)
+                # Continue with other fields
+                    
+        if failures:
+            EntityRegistry._logger.warning(f"Partial failure during nested entity forking: {failures}")
 
     def entity_dump(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         """
@@ -170,6 +450,15 @@ class Entity(BaseModel):
         return data
 
     @classmethod
+    def compare_entities(cls, e1: "Entity", snapshot: Dict[str, Any]) -> bool:
+        """Compare entity with a dictionary snapshot."""
+        # Convert entity to comparable structure
+        data1 = e1.entity_dump()
+        # Use our unified comparison
+        is_equal, _ = compare_values(data1, snapshot)
+        return is_equal
+
+    @classmethod
     def get(cls: Type["Entity"], entity_id: UUID) -> Optional["Entity"]:
         from __main__ import EntityRegistry
         ent = EntityRegistry.get(entity_id, expected_type=cls)
@@ -185,20 +474,159 @@ class Entity(BaseModel):
         from __main__ import EntityRegistry
         return EntityRegistry.get_many(ids, expected_type=cls)
 
-    @classmethod
-    def compare_entities(cls, e1: "Entity", snapshot: Dict[str, Any]) -> bool:
-        data1 = e1.entity_dump()
-        for k in ['id','created_at','parent_id','live_id','old_ids','lineage_id']:
-            data1.pop(k, None)
-        keys = set(data1.keys()) | set(snapshot.keys())
-        for k in keys:
-            if data1.get(k) != snapshot.get(k):
-                return False
-        return True
+##############################
+# 4) Enhanced Entity Collection and Dependency Tracking
+##############################
+
+def _collect_entities_with_dependencies(args: tuple, kwargs: dict) -> Dict[int, Tuple[Entity, List[Entity]]]:
+    """
+    Collect all entities with their dependencies using lists instead of sets.
+    
+    Returns a dictionary mapping entity memory id to a tuple of:
+    (entity, list of entities it contains)
+    """
+    result = {}
+    dep_map = {}  # {id(entity): list of entities it contains}
+    visited_ids = set()  # Track visited object IDs for cycle detection
+    
+    def scan(obj: Any, container: Optional[Entity] = None) -> None:
+        # Skip if already visited (cycle detection)
+        obj_id = id(obj)
+        if obj_id in visited_ids:
+            return
+        visited_ids.add(obj_id)
+            
+        if isinstance(obj, Entity):
+            result[obj_id] = obj
+            if container is not None:
+                container_id = id(container)
+                if container_id not in dep_map:
+                    dep_map[container_id] = []
+                # Use a list and check by ID to avoid hashability issues
+                if obj not in dep_map[container_id]:
+                    dep_map[container_id].append(obj)
+            
+            # Scan entity fields recursively
+            for field_name in obj.model_fields.keys():
+                try:
+                    field_value = getattr(obj, field_name, None)
+                    if field_value is not None:
+                        scan(field_value, obj)
+                except Exception as e:
+                    EntityRegistry._logger.error(f"Error scanning field {field_name} of {type(obj).__name__}: {e}")
+                    
+        elif isinstance(obj, (list, tuple)):
+            for x in obj:
+                scan(x, container)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                scan(v, container)
+    
+    # Scan root arguments
+    for a in args:
+        scan(a)
+    for v in kwargs.values():
+        scan(v)
+        
+    # Create final result with dependencies
+    return {eid: (entity, dep_map.get(eid, [])) for eid, entity in result.items()}
+
+def _check_and_fork_with_dependencies(entities_with_deps: Dict[int, Tuple[Entity, List[Entity]]]) -> None:
+    """Fork entities in dependency order (bottom-up)."""
+    # Convert to adjacency list for topological sort
+    graph = {id_e: {id(dep) for dep in deps} for id_e, (e, deps) in entities_with_deps.items()}
+    
+    # Find all leaf nodes (entities with no dependencies)
+    processed = set()
+    while len(processed) < len(entities_with_deps):
+        # Find nodes whose dependencies are all processed (bottom-up approach)
+        next_batch = set()
+        for eid, deps in graph.items():
+            if eid not in processed and deps.issubset(processed):
+                next_batch.add(eid)
+                
+        # Process this batch
+        for eid in next_batch:
+            entity = entities_with_deps[eid][0]
+            cold = EntityRegistry.get_cold_snapshot(entity.id)
+            
+            if cold:
+                is_equal, diff_info = compare_values(entity, cold)
+                if not is_equal:
+                    # Fork with diff info for proper nested handling
+                    forked_entity = entity.fork(diff_info=diff_info)
+                    
+                    # Update reference in any parent entities that contain this entity
+                    for parent_id, (parent, children) in entities_with_deps.items():
+                        if id(entity) in {id(child) for child in children}:
+                            # Find and update the reference in the parent
+                            for field_name in parent.model_fields.keys():
+                                field_value = getattr(parent, field_name, None)
+                                
+                                # Direct reference to the entity
+                                if field_value is entity:
+                                    setattr(parent, field_name, forked_entity)
+                                
+                                # Entity in a list/collection
+                                elif isinstance(field_value, list):
+                                    for i, item in enumerate(field_value):
+                                        if item is entity:
+                                            field_value[i] = forked_entity
+                    
+            processed.add(eid)
+            
+        # Ensure we're making progress
+        if not next_batch:
+            # Graph has cycles, just process remaining entities
+            for eid, (entity, _) in entities_with_deps.items():
+                if eid not in processed:
+                    cold = EntityRegistry.get_cold_snapshot(entity.id)
+                    if cold:
+                        is_equal, diff_info = compare_values(entity, cold)
+                        if not is_equal:
+                            entity.fork(diff_info=diff_info)
+                    processed.add(eid)
+
+##############################
+# 5) Entity Collection helpers
+##############################
+
+def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
+    """
+    Simpler entity collection function that doesn't track dependencies.
+    Used as a fallback.
+    """
+    found: Dict[int, Entity] = {}
+    def scan(obj: Any) -> None:
+        if isinstance(obj, Entity):
+            found[id(obj)] = obj
+        elif isinstance(obj, (list, tuple, set)):
+            for x in obj:
+                scan(x)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                scan(v)
+    for a in args:
+        scan(a)
+    for v in kwargs.values():
+        scan(v)
+    return found
+
+def _check_and_fork_modified(entity: Entity) -> None:
+    """
+    Simple check and fork for a single entity.
+    This is a fallback for backward compatibility.
+    """
+    from __main__ import EntityRegistry
+    cold = EntityRegistry.get_cold_snapshot(entity.id)
+    if cold:
+        is_equal, diff_info = compare_values(entity, cold)
+        if not is_equal:
+            entity.fork(diff_info=diff_info)
 
 
 ##############################
-# 3) EntityStorage Protocol
+# 6) EntityStorage Protocol
 ##############################
 class EntityStorage(Protocol):
     """
@@ -214,14 +642,14 @@ class EntityStorage(Protocol):
     def set_inference_orchestrator(self, orchestrator: object) -> None: ...
     def get_inference_orchestrator(self) -> Optional[object]: ...
     def clear(self) -> None: ...
-    # New method to unify lineage logic externally
+    # Methods to unify lineage logic externally
     def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]: ...
     def has_lineage_id(self, lineage_id: UUID) -> bool: ...
     def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]: ...
 
 
 ##############################
-# 4) InMemoryEntityStorage
+# 7) InMemoryEntityStorage
 ##############################
 class InMemoryEntityStorage(EntityStorage):
     """
@@ -242,17 +670,26 @@ class InMemoryEntityStorage(EntityStorage):
         return self._registry.get(entity_id)
 
     def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
+        """Register entity with improved diffing and forking."""
         if isinstance(entity_or_id, UUID):
             return self.get(entity_or_id, None)
 
         e = entity_or_id
+        
+        # If from_storage, no need to check modifications (already registered)
+        if getattr(e, 'from_storage', False):
+            return e
+            
         old = self._registry.get(e.id)
         if not old:
             self._store_cold_snapshot(e)
             return e
 
-        if e.has_modifications(old):
-            e.fork(force=True)
+        # Check for modifications using unified comparison function
+        is_equal, diff_info = compare_values(e, old)
+        if not is_equal:
+            e = e.fork(diff_info=diff_info)
+            
         return e
 
     def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
@@ -325,7 +762,7 @@ class InMemoryEntityStorage(EntityStorage):
 
 
 ##############################
-# 5) BaseEntitySQL (fallback)
+# 8) BaseEntitySQL (fallback)
 ##############################
 try:
     # If you are using sqlmodel/SQLAlchemy, import them. 
@@ -403,7 +840,7 @@ except ImportError:
 
 
 ##############################
-# 6) SqlEntityStorage
+# 9) SqlEntityStorage
 ##############################
 class SqlEntityStorage(EntityStorage):
     """
@@ -459,27 +896,58 @@ class SqlEntityStorage(EntityStorage):
         return None
 
     def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
+        """Register entity with proper relationship handling."""
         if isinstance(entity_or_id, UUID):
             return self.get(entity_or_id, None)
-
-        ent = entity_or_id
-        old = self.get_cold_snapshot(ent.id)
-        if old and ent.has_modifications(old):
-            ent.fork(force=True)
-            return self.register(ent)  # re-register with the new ID
-
-        ormcls = self._resolve_orm_cls(ent)
+            
+        entity = entity_or_id
+        
+        # Log details to diagnose issues
+        self._logger.info(f"Registering {type(entity).__name__}({entity.id}) with from_storage={getattr(entity, 'from_storage', False)}")
+        
+        # If from_storage, no need to check modifications
+        if getattr(entity, 'from_storage', False):
+            self._logger.debug(f"Entity {entity.id} is from storage, skipping modification check")
+            return entity
+                    
+        old = self.get_cold_snapshot(entity.id)
+        if old:
+            # Use our structured comparison with logging
+            self._logger.debug(f"Comparing {entity.id} with existing version")
+            is_equal, diff_info = compare_values(entity, old)
+            if not is_equal:
+                self._logger.info(f"Changes detected in {entity.id}, forking with diff: {diff_info}")
+                # Fork with diff info for proper nested handling
+                entity = entity.fork(diff_info=diff_info)
+                # Note: no recursive call to register - the fork already registers itself
+            else:
+                self._logger.debug(f"No changes detected in {entity.id}")
+                
+        # Store entity in DB
+        ormcls = self._resolve_orm_cls(entity)
         if ormcls is None:
-            self._logger.error(f"No ORM mapping found for {type(ent)}. Possibly add {type(ent)} -> BaseEntitySQL?")
+            self._logger.error(f"No ORM mapping found for {type(entity)}. Possibly add {type(entity)} -> BaseEntitySQL?")
             return None
 
-        row = ormcls.from_entity(ent)
         with self._session_factory() as sess:
-            sess.merge(row)
+            # Convert to SQL model
+            sql_model = ormcls.from_entity(entity)
+            
+            # Save the SQL model
+            sess.merge(sql_model)
+            sess.flush()
+            
+            # Handle M2M relationships if present
+            if hasattr(sql_model, 'sync_message_relationships') and hasattr(entity, 'history'):
+                # Get fresh copy with relationships loaded
+                db_model = sess.get(ormcls, sql_model.id)
+                if db_model:
+                    db_model = ormcls.sync_message_relationships(db_model, entity, sess)
+                    
             sess.commit()
 
-        self._entity_class_map[ent.id] = type(ent)
-        return ent
+        self._entity_class_map[entity.id] = type(entity)
+        return entity
 
     def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
         cold = self.get_cold_snapshot(entity_id)
@@ -576,7 +1044,7 @@ class SqlEntityStorage(EntityStorage):
 
 
 ##############################
-# 7) EntityRegistry (Facade)
+# 10) EntityRegistry (Facade)
 ##############################
 class EntityRegistry(BaseRegistry):
     """
@@ -645,6 +1113,11 @@ class EntityRegistry(BaseRegistry):
         return cls._storage.get_lineage_ids(lineage_id)
 
     @classmethod
+    def get_lineage_entities(cls, lineage_id: UUID) -> List[Entity]:
+        """Get all entities sharing a lineage_id."""
+        return cls._storage.get_lineage_entities(lineage_id)
+
+    @classmethod
     def build_lineage_tree(cls, lineage_id: UUID) -> Dict[UUID, Dict[str, Any]]:
         """
         Build a lineage tree from a list of Entities in that lineage.
@@ -663,8 +1136,18 @@ class EntityRegistry(BaseRegistry):
             diff_from_parent = None
             if e.parent_id and e.parent_id in by_id:
                 parent = by_id[e.parent_id]
-                diff = e.compute_diff(parent)
-                diff_from_parent = diff.field_diffs
+                # Use unified comparison for diff calculation
+                is_equal, raw_diffs = compare_values(e, parent)
+                if not is_equal:
+                    # Convert to old format for compatibility
+                    diff = EntityDiff()
+                    for path, diff_info in raw_diffs.items():
+                        field = path.split('.')[0] if '.' in path else path
+                        field = field.split('[')[0] if '[' in field else field
+                        diff.add_diff(field, diff_info["type"], 
+                                  old_value=diff_info.get("old"), 
+                                  new_value=diff_info.get("new"))
+                    diff_from_parent = diff.field_diffs
 
             tree[e.id] = {
                 "entity": e,
@@ -722,23 +1205,59 @@ class EntityRegistry(BaseRegistry):
         lines = ["```mermaid", "graph TD"]
 
         def format_value(val: Any) -> str:
-            s = str(val)
-            return s[:15] + "..." if len(s) > 15 else s
+            """Format value with type-specific handling."""
+            if val is None:
+                return "null"
+            elif isinstance(val, (int, float, bool, str, UUID)):
+                s = str(val)
+                return s[:15] + "..." if len(s) > 15 else s
+            elif isinstance(val, (list, tuple)):
+                return f"[{len(val)} items]"
+            elif isinstance(val, dict):
+                return f"{{{len(val)} keys}}"
+            elif isinstance(val, Entity):
+                return f"Entity({val.id})"
+            else:
+                return f"{type(val).__name__}"
 
+        # Add nodes with detailed change info
         for node_id, node_data in data["nodes"].items():
             ent = node_data["entity"]
             clsname = type(ent).__name__
             short = str(node_id)[:8]
+            
             if not node_data["parent_id"]:
-                # root
+                # Root node
                 dd = list(node_data["data"].items())[:3]
                 summary = "\\n".join(f"{k}={format_value(v)}" for k,v in dd)
                 lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n{summary}\"]")
             else:
+                # Change node with detailed diff
                 diff = data["diffs"].get(node_id, {})
                 changes = len(diff)
-                lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n({changes} changes)\"]")
+                if changes > 0:
+                    change_details = []
+                    for field, info in diff.items():
+                        t = info.get("type")
+                        if t == "modified":
+                            old_val = format_value(info.get("old"))
+                            new_val = format_value(info.get("new"))
+                            change_details.append(f"{field}: {old_val}→{new_val}")
+                        elif t == "added":
+                            change_details.append(f"+{field}: {format_value(info.get('new'))}")
+                        elif t == "removed":
+                            change_details.append(f"-{field}: {format_value(info.get('old'))}")
+                    
+                    # Limit details for readability
+                    if len(change_details) > 3:
+                        change_details = change_details[:3] + [f"...({len(diff)-3} more)"]
+                    
+                    change_summary = "\\n".join(change_details)
+                    lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n{change_summary}\"]")
+                else:
+                    lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n(No changes detected)\"]")
 
+        # Edge labels with detailed changes
         for (p, c) in data["edges"]:
             diff = data["diffs"].get(c, {})
             if diff:
@@ -746,11 +1265,14 @@ class EntityRegistry(BaseRegistry):
                 for field, info in diff.items():
                     t = info.get("type")
                     if t == "modified":
-                        label_parts.append(f"{field} mod")
+                        old_val = format_value(info.get("old"))
+                        new_val = format_value(info.get("new"))
+                        label_parts.append(f"{field}: {old_val}→{new_val}")
                     elif t == "added":
                         label_parts.append(f"+{field}")
                     elif t == "removed":
                         label_parts.append(f"-{field}")
+                
                 if len(label_parts) > 3:
                     label_parts = label_parts[:3] + [f"...({len(diff)-3} more)"]
                 label = "\\n".join(label_parts)
@@ -763,58 +1285,56 @@ class EntityRegistry(BaseRegistry):
 
 
 ##############################
-# 8) Decorators for versioning
+# 11) Enhanced Entity Tracer
 ##############################
-def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
-    found: Dict[int, Entity] = {}
-    def scan(obj: Any) -> None:
-        if isinstance(obj, Entity):
-            found[id(obj)] = obj
-        elif isinstance(obj, (list, tuple, set)):
-            for x in obj:
-                scan(x)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                scan(v)
-    for a in args:
-        scan(a)
-    for v in kwargs.values():
-        scan(v)
-    return found
-
-def _check_and_fork_modified(entity: Entity) -> None:
-    from __main__ import EntityRegistry
-    cold = EntityRegistry.get_cold_snapshot(entity.id)
-    if cold and entity.has_modifications(cold):
-        entity.fork()
-
 def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     Decorator that checks/forks Entities for modifications before/after the function call.
+    Uses dependency tracking for proper fork order.
     """
     if inspect.iscoroutinefunction(func):
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            ents_before = _collect_entities(args, kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
+            # Collect entities and their dependencies
+            ents_with_deps = _collect_entities_with_dependencies(args, kwargs)
+            
+            # Fork bottom-up before function call
+            _check_and_fork_with_dependencies(ents_with_deps)
+            
+            # Execute the function
             result = await func(*args, **kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
-            if isinstance(result, Entity) and id(result) in ents_before:
-                return ents_before[id(result)]
+            
+            # Recollect entities and their dependencies after function call
+            ents_with_deps = _collect_entities_with_dependencies(args, kwargs)
+            
+            # Fork bottom-up after function call
+            _check_and_fork_with_dependencies(ents_with_deps)
+            
+            # If result is a modified entity, return the appropriate version
+            if isinstance(result, Entity) and id(result) in ents_with_deps:
+                return ents_with_deps[id(result)][0]
             return result
         return async_wrapper
     else:
         @wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            ents_before = _collect_entities(args, kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
+            # Collect entities and their dependencies
+            ents_with_deps = _collect_entities_with_dependencies(args, kwargs)
+            
+            # Fork bottom-up before function call
+            _check_and_fork_with_dependencies(ents_with_deps)
+            
+            # Execute the function
             result = func(*args, **kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
-            if isinstance(result, Entity) and id(result) in ents_before:
-                return ents_before[id(result)]
+            
+            # Recollect entities and their dependencies after function call
+            ents_with_deps = _collect_entities_with_dependencies(args, kwargs)
+            
+            # Fork bottom-up after function call
+            _check_and_fork_with_dependencies(ents_with_deps)
+            
+            # If result is a modified entity, return the appropriate version
+            if isinstance(result, Entity) and id(result) in ents_with_deps:
+                return ents_with_deps[id(result)][0]
             return result
         return sync_wrapper

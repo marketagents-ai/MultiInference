@@ -28,7 +28,7 @@ from minference.clients.utils import parse_json_string, msg_dict_to_oai, msg_dic
 logging.basicConfig(level=logging.DEBUG)
 
 # 1) Create your engine (here using SQLite as an example)
-engine = create_engine("sqlite:///mydatabase.db", echo=True)
+engine = create_engine("sqlite:///mydatabase.db", echo=False)
 
 # 2) Create all tables if needed
 SQLModel.metadata.create_all(engine)
