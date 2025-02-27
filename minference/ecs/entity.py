@@ -1,6 +1,59 @@
 ############################################################
-# entity.py (refactored)
+# entity.py
 ############################################################
+
+"""
+Entity System with Hierarchical Version Control
+
+This module implements a hierarchical entity system with version control capabilities.
+Key concepts:
+
+1. ENTITY IDENTITY AND STATE:
+   - Each entity has both an `id` (version identifier) and a `live_id` (memory state identifier)
+   - Entities are hashable by (id, live_id) combination to distinguish warm/cold copies
+   - Cold snapshots are stored versions, warm copies are in-memory working versions
+
+2. HIERARCHICAL STRUCTURE:
+   - Entities can contain other entities (sub-entities) in fields, lists, or dictionaries
+   - The `get_sub_entities()` method recursively discovers all nested entities
+   - Changes in sub-entities trigger parent entity versioning
+
+3. MODIFICATION DETECTION:
+   - `has_modifications()` performs deep comparison of entity trees
+   - Returns both whether changes exist and the set of modified entities
+   - Handles nested changes automatically through recursive comparison
+
+4. FORKING PROCESS:
+   - When changes are detected, affected entities get new IDs
+   - Parent entities automatically fork when sub-entities change
+   - All changes happen in memory first, then are committed to storage
+   - No explicit dependency tracking needed - hierarchy is discovered dynamically
+
+5. STORAGE LAYER:
+   - Stores complete entity trees in a single operation
+   - Uses cold snapshots to preserve version history
+   - Handles circular references and complex hierarchies automatically
+
+Example Usage:
+```python
+# Create and modify an entity
+entity = ComplexEntity(nested=SubEntity(...))
+entity.nested.value = "new"
+
+# Automatic versioning on changes
+if entity.has_modifications(stored_version):
+    new_version = entity.fork()  # Creates new IDs for changed entities
+    
+# Storage handles complete trees
+EntityRegistry.register(new_version)  # Stores all sub-entities
+```
+
+Implementation Notes:
+- No dependency graphs needed - hierarchy is discovered through type hints
+- Warm/cold copy distinction through live_id
+- Bottom-up change propagation through recursive detection
+- Complete tree operations for consistency
+"""
 
 import json
 import inspect
@@ -35,8 +88,8 @@ class BaseRegistry:
 
 # Define type variables
 T = TypeVar('T')
-E = TypeVar('E', bound='Entity')
 SQMT = TypeVar('SQMT', bound='SQLModelType')
+T_Self = TypeVar('T_Self', bound='Entity')
 
 # Type for SQL model classes that implement to_entity/from_entity
 class SQLModelType(Protocol):
@@ -105,23 +158,6 @@ def create_cold_snapshot(entity: 'Entity') -> 'Entity':
     # Return the snapshot
     return snapshot
 
-def get_nested_entities(entity: 'Entity') -> Dict[str, List['Entity']]:
-    """
-    Get all nested entities within an entity.
-    Returns a dictionary mapping field names to lists of entities.
-    """
-    nested: Dict[str, List['Entity']] = {}
-    
-    for field_name, field_value in entity.model_dump().items():
-        if isinstance(field_value, Entity):
-            nested[field_name] = [field_value]
-        elif isinstance(field_value, list):
-            entities = [item for item in field_value if isinstance(item, Entity)]
-            if entities:
-                nested[field_name] = entities
-    
-    return nested
-
 ##############################
 # 4) The Entity + Diff
 ##############################
@@ -150,10 +186,50 @@ class EntityDiff:
         diff.field_diffs = diff_dict
         return diff
 
+    def has_changes(self) -> bool:
+        """Check if there are any differences."""
+        return bool(self.field_diffs)
+
 class Entity(BaseModel):
     """
-    Base class for registry-integrated, serializable entities.
-    Supports versioning, nested entity tracking, and registry integration.
+    Base class for registry-integrated, serializable entities with versioning support.
+
+    Entity Lifecycle and Behavior:
+
+    1. ENTITY CREATION AND REGISTRATION:
+       - Create entity in memory
+       - Register:
+         a) Create cold snapshot
+         b) Store in registry/SQL
+         c) Done
+
+    2. TRACED FUNCTION BEHAVIOR:
+       - Get stored version by ID (ORM relationships automatically load the complete entity tree)
+       - Compare current (warm) vs stored
+       - If different: FORK
+
+    3. FORKING PROCESS (Bottom-Up):
+       - Compare with stored version (already complete with all nested entities)
+       - If different:
+         a) Fork entity (new ID, set parent)
+         b) Store cold snapshot
+         c) Update references in memory
+
+    Key Principles:
+    - Proper ORM relationships = complete entity trees on load
+    - Single DB fetch gets entire entity structure
+    - Memory state is already correct after forking
+    - Bottom-up processing happens naturally through ORM relationships
+
+    Attributes:
+        id: Unique identifier for this version
+        live_id: Identifier for the "warm" copy in memory
+        created_at: Timestamp of creation
+        parent_id: ID of the previous version
+        lineage_id: ID grouping all versions of this entity
+        old_ids: Historical list of previous IDs
+        from_storage: Whether this instance was loaded from storage
+        force_parent_fork: Flag indicating nested changes requiring parent fork
     """
     id: UUID = Field(default_factory=uuid4, description="Unique identifier")
     live_id: UUID = Field(default_factory=uuid4, description="Live/warm identifier")
@@ -162,6 +238,7 @@ class Entity(BaseModel):
     lineage_id: UUID = Field(default_factory=uuid4)
     old_ids: List[UUID] = Field(default_factory=list)
     from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage")
+    force_parent_fork: bool = Field(default=False, description="Internal flag to force parent forking")
     
     model_config = {
         "json_encoders": {
@@ -170,147 +247,151 @@ class Entity(BaseModel):
         }
     }
 
-    def register_entity(self: "Entity") -> "Entity":
-        """Register this entity with the registry."""
-        from __main__ import EntityRegistry
-        
-        # Register nested entities first (bottom-up approach)
-        self._register_nested_entities()
-        
-        # Check if entity exists and if it has changes
-        if not EntityRegistry.has_entity(self.id):
-            EntityRegistry.register(self)
-        elif not self.from_storage:
-            cold = EntityRegistry.get_cold_snapshot(self.id)
-            if cold and self.has_modifications(cold):
-                self.fork()
-                
-        return self
+    def __hash__(self) -> int:
+        """Make entity hashable by combining id and live_id."""
+        return hash((self.id, self.live_id))
 
-    def _register_nested_entities(self) -> None:
-        """Register all nested entities first to ensure bottom-up processing."""
-        from __main__ import EntityRegistry
-        
-        # Get all nested entities
-        nested_entities = get_nested_entities(self)
-        
-        # Register each entity
-        for field_name, entities in nested_entities.items():
-            for entity in entities:
-                if isinstance(entity, Entity):
-                    # Check if entity has changes and fork if needed
-                    if not EntityRegistry.has_entity(entity.id):
-                        entity.register_entity()
-                    else:
-                        cold = EntityRegistry.get_cold_snapshot(entity.id)
-                        if not entity.from_storage and cold and entity.has_modifications(cold):
-                            # Fork returns the new entity
-                            new_entity = entity.fork()
-                            
-                            # Update the reference in the parent
-                            if isinstance(getattr(self, field_name), list):
-                                # For list fields, find and replace the entity
-                                entity_list = getattr(self, field_name)
-                                for i, e in enumerate(entity_list):
-                                    if isinstance(e, Entity) and e.id == entity.id:
-                                        entity_list[i] = new_entity
-                            else:
-                                # For single reference fields
-                                setattr(self, field_name, new_entity)
+    def __eq__(self, other: object) -> bool:
+        """Entities are equal if they have the same id and live_id."""
+        if not isinstance(other, Entity):
+            return NotImplemented
+        return self.id == other.id and self.live_id == other.live_id
 
     @model_validator(mode='after')
-    def _auto_register(self) -> Self:
-        """Automatically register the entity when validated."""
-        if not self.from_storage:  # Only auto-register if not from storage
-            entity = self.register_entity()
+    def register_on_create(self) -> Self:
+        """Register this entity when it's created."""
+        from __main__ import EntityRegistry
+        if not self.from_storage:  # Only register new entities
+            EntityRegistry.register(self)
         return self
 
-    def fork(self, force: bool = False, **kwargs: Any) -> "Entity":
+    def fork(self: T_Self) -> T_Self:
         """
-        Create a new version of this entity with a new ID.
+        Fork this entity if it differs from its stored version.
+        Works entirely in memory - database operations happen at registration.
         
-        Args:
-            force: Force forking even if no changes detected
-            **kwargs: Fields to modify in the new fork
-            
-        Returns:
-            The new forked entity
+        The forking process follows these steps:
+        1. Get the stored version of this entity
+        2. Check for modifications in the entire entity tree
+        3. Sort entities by dependency (bottom-up) to ensure proper forking order
+        4. Fork each entity in the correct order
+        5. Register each forked entity with storage
+        6. Return the forked entity
         """
         from __main__ import EntityRegistry
         
-        # Fork nested entities first (bottom-up approach)
-        nested_changes = self._fork_nested_entities()
-        
-        # Get cold snapshot
-        cold = EntityRegistry.get_cold_snapshot(self.id)
-        if cold is None:
-            EntityRegistry.register(self)
+        # Get stored version
+        frozen = EntityRegistry.get_cold_snapshot(self.id)
+        if frozen is None:
             return self
-
-        # Check for direct field changes
-        changed = bool(kwargs)
-        if kwargs:
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-
-        # Determine if forking is needed
-        needs_fork = (
-            force or 
-            changed or 
-            nested_changes or 
-            (cold and self.has_modifications(cold))
-        )
-        
+            
+        # Check what needs to be forked
+        needs_fork, entities_to_fork = self.has_modifications(frozen)
         if not needs_fork:
             return self
-
-        # Create new entity version
-        old_id = self.id
-        self.id = uuid4()
-        self.parent_id = old_id
-        self.old_ids.append(old_id)
+            
+        # Sort entities by dependency (bottom-up)
+        sorted_entities = []
+        processed = set()
         
-        # Register new version
-        EntityRegistry.register(self)
+        def process_entity(entity: Entity) -> None:
+            if entity in processed:
+                return
+            # Process dependencies first
+            for sub in entity.get_sub_entities():
+                if sub in entities_to_fork and sub not in processed:
+                    process_entity(sub)
+            sorted_entities.append(entity)
+            processed.add(entity)
+        
+        # Process all entities that need forking
+        for entity in entities_to_fork:
+            if entity not in processed:
+                process_entity(entity)
+        
+        # Fork entities in dependency order (bottom-up)
+        id_map = {}  # Map old IDs to new entities
+        for entity in sorted_entities:
+            old_id = entity.id
+            entity.id = uuid4()
+            entity.parent_id = old_id
+            entity.old_ids.append(old_id)
+            id_map[old_id] = entity
+            
+            # Update references in parent entities
+            for parent in sorted_entities:
+                if parent == entity:
+                    continue
+                    
+                # Update references in parent's fields
+                for field_name, field_info in parent.model_fields.items():
+                    value = getattr(parent, field_name)
+                    if value is None:
+                        continue
+                        
+                    # Direct entity reference
+                    if isinstance(value, Entity) and value.id == old_id:
+                        setattr(parent, field_name, entity)
+                        
+                    # List/tuple of entities
+                    elif isinstance(value, (list, tuple)):
+                        if isinstance(value, tuple):
+                            value = list(value)
+                        for i, item in enumerate(value):
+                            if isinstance(item, Entity) and item.id == old_id:
+                                value[i] = entity
+                        if isinstance(getattr(parent, field_name), tuple):
+                            value = tuple(value)
+                        setattr(parent, field_name, value)
+                        
+                    # Dict containing entities
+                    elif isinstance(value, dict):
+                        for k, v in value.items():
+                            if isinstance(v, Entity) and v.id == old_id:
+                                value[k] = entity
+                        setattr(parent, field_name, value)
+            
+            # Register the forked entity with storage
+            EntityRegistry.register(entity)
+        
+        # Return the forked entity
         return self
 
-    def _fork_nested_entities(self) -> bool:
+    def has_modifications(self, other: "Entity") -> Tuple[bool, Dict["Entity", EntityDiff]]:
         """
-        Fork all nested entities that have modifications.
-        Returns True if any nested entities were forked.
+        Check if this entity or any nested entities differ from their stored versions.
+        Returns:
+            Tuple of (any_changes, {changed_entity: its_changes})
         """
-        from __main__ import EntityRegistry
+        modified_entities: Dict["Entity", EntityDiff] = {}
         
-        any_changes = False
-        nested_entities = get_nested_entities(self)
+        # Get all sub-entities first to ensure bottom-up processing
+        my_subs = self.get_sub_entities()
+        other_subs = other.get_sub_entities()
         
-        for field_name, entities in nested_entities.items():
-            for i, entity in enumerate(entities):
-                if isinstance(entity, Entity):
-                    # Check if entity has changes
-                    cold = EntityRegistry.get_cold_snapshot(entity.id)
-                    if cold and entity.has_modifications(cold):
-                        # Fork and update reference
-                        new_entity = entity.fork()
-                        any_changes = True
-                        
-                        # Update the reference in the parent
-                        if isinstance(getattr(self, field_name), list):
-                            # For list fields, find and replace the entity
-                            entity_list = getattr(self, field_name)
-                            for j, e in enumerate(entity_list):
-                                if isinstance(e, Entity) and e.id == entity.id:
-                                    entity_list[j] = new_entity
-                        else:
-                            # For single reference fields
-                            setattr(self, field_name, new_entity)
+        # Check sub-entities first (bottom-up)
+        for my_sub in my_subs:
+            other_sub = next((e for e in other_subs if e.id == my_sub.id), None)
+            if other_sub:
+                # Recursively check nested entity
+                sub_changed, sub_modified = my_sub.has_modifications(other_sub)
+                if sub_changed:
+                    # If a nested entity changed, add it and its modifications
+                    modified_entities.update(sub_modified)
+                    # Mark parent as needing fork (but without direct changes)
+                    if self not in modified_entities:
+                        modified_entities[self] = EntityDiff()
         
-        return any_changes
-
-    def has_modifications(self, other: "Entity") -> bool:
-        """Check if this entity differs from another entity."""
-        has_diffs, _ = compare_entity_fields(self, other)
-        return has_diffs
+        # Then check direct fields (after sub-entities)
+        has_diffs, field_diffs = compare_entity_fields(self, other)
+        if has_diffs:
+            # If we already have an empty diff (from nested changes), update it
+            if self in modified_entities:
+                modified_entities[self].field_diffs.update(field_diffs)
+            else:
+                modified_entities[self] = EntityDiff.from_diff_dict(field_diffs)
+        
+        return bool(modified_entities), modified_entities
 
     def compute_diff(self, other: "Entity") -> EntityDiff:
         """Compute detailed differences between this entity and another entity."""
@@ -358,6 +439,21 @@ class Entity(BaseModel):
         from __main__ import EntityRegistry
         return EntityRegistry.get_many(ids, expected_type=cls)
 
+    def get_sub_entities(self) -> Set['Entity']:
+        """Get all sub-entities of this entity."""
+        nested: Set['Entity'] = set()
+        for field_name, field_info in self.model_fields.items():
+            value = getattr(self, field_name)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, Entity):
+                        nested.add(item)
+                        nested.update(item.get_sub_entities())
+            elif isinstance(value, Entity):
+                nested.add(value)
+                nested.update(value.get_sub_entities())
+        return nested
+
 ##############################
 # 5) Storage Protocol
 ##############################
@@ -383,7 +479,7 @@ class EntityStorage(Protocol):
 
 class InMemoryEntityStorage(EntityStorage):
     """
-    Improved in-memory storage with optimized operations.
+    In-memory storage using Python's object references.
     """
     def __init__(self) -> None:
         self._logger = logging.getLogger("InMemoryEntityStorage")
@@ -405,20 +501,38 @@ class InMemoryEntityStorage(EntityStorage):
         if isinstance(entity_or_id, UUID):
             return self.get(entity_or_id, None)
 
-        e = entity_or_id
-        old = self._registry.get(e.id)
-        
-        if not old:
-            self._store_cold_snapshot(e)
-            return e
-        
-        # Check for modifications
-        if e.has_modifications(old):
-            e.fork(force=True)
+        entity = entity_or_id
             
-        return e
+        # Check if entity already exists
+        if self.has_entity(entity.id):
+            # Get existing version
+            existing = self.get_cold_snapshot(entity.id)
+            if existing and entity.has_modifications(existing):
+                # Fork the entity and all its nested entities
+                entity = entity.fork()
+        
+        # Collect all entities that need to be stored
+        entities_to_store: Dict[UUID, Entity] = {}
+        
+        def collect_entities(e: Entity) -> None:
+            if e.id not in entities_to_store:
+                # Create a cold snapshot for storage
+                snap = create_cold_snapshot(e)
+                entities_to_store[e.id] = snap
+                # Collect nested entities
+                for sub in e.get_sub_entities():
+                    collect_entities(sub)
+        
+        # Collect all entities in the tree
+        collect_entities(entity)
+        
+        # Store all entities
+        for e in entities_to_store.values():
+            self._store_cold_snapshot(e)
+            
+        return entity
 
-    def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
+    def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]] = None) -> Optional[Entity]:
         """Get an entity by ID with optional type checking."""
         ent = self._registry.get(entity_id)
         if not ent:
@@ -443,25 +557,20 @@ class InMemoryEntityStorage(EntityStorage):
             if isinstance(e, entity_type)
         ]
 
-    def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]]) -> List[Entity]:
+    def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]] = None) -> List[Entity]:
         """Get multiple entities by ID."""
-        out: List[Entity] = []
-        for eid in entity_ids:
-            g = self.get(eid, expected_type)
-            if g is not None:
-                out.append(g)
-        return out
+        return [e for eid in entity_ids if (e := self.get(eid, expected_type)) is not None]
 
     def get_registry_status(self) -> Dict[str, Any]:
         """Get status information about the registry."""
         return {
             "in_memory": True,
             "entity_count": len(self._registry),
-            "lineage_count": len(self._lineages),
+            "lineage_count": len(self._lineages)
         }
 
     def set_inference_orchestrator(self, orchestrator: object) -> None:
-        """Set an inference orchestrator for this storage."""
+        """Set an inference orchestrator."""
         self._inference_orchestrator = orchestrator
 
     def get_inference_orchestrator(self) -> Optional[object]:
@@ -486,16 +595,29 @@ class InMemoryEntityStorage(EntityStorage):
         """Get all entity IDs with a specific lineage ID."""
         return [e.id for e in self._registry.values() if e.lineage_id == lineage_id]
 
-    def _store_cold_snapshot(self, e: Entity) -> None:
-        """Store a cold snapshot of an entity."""
-        snap = create_cold_snapshot(e)
-        self._registry[e.id] = snap
-
-        # Update lineage tracking
-        if e.lineage_id not in self._lineages:
-            self._lineages[e.lineage_id] = []
-        if e.id not in self._lineages[e.lineage_id]:
-            self._lineages[e.lineage_id].append(e.id)
+    def _store_cold_snapshot(self, entity: Entity) -> None:
+        """Store a cold snapshot of an entity and all its sub-entities."""
+        stored = set()
+        
+        def store_recursive(e: Entity) -> None:
+            if e in stored:  # Using new hash/eq
+                return
+                
+            stored.add(e)
+            snap = create_cold_snapshot(e)
+            self._registry[e.id] = snap
+            
+            # Update lineage tracking
+            if e.lineage_id not in self._lineages:
+                self._lineages[e.lineage_id] = []
+            if e.id not in self._lineages[e.lineage_id]:
+                self._lineages[e.lineage_id].append(e.id)
+                
+            # Store all sub-entities
+            for sub in e.get_sub_entities():
+                store_recursive(sub)
+                
+        store_recursive(entity)
 
 
 ##############################
@@ -521,7 +643,7 @@ try:
         """Fallback table for storing any Entity if no specialized table is found."""
         id: UUID = Field(default_factory=uuid4, primary_key=True)
         lineage_id: UUID = Field(default_factory=uuid4, index=True)
-        parent_id: Optional[UUID] = Field(default=None)
+        parent_id: Optional[UUID] = Field(default=None, foreign_key="baseentitysql.id")
         created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
         old_ids: List[UUID] = Field(default_factory=list, sa_column=Column(JSON))
 
@@ -547,7 +669,7 @@ try:
 
         @classmethod
         def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
-            versioning_fields = {"id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id"}
+            versioning_fields = {"id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id", "from_storage", "force_parent_fork"}
             raw = entity.model_dump()
             data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
             return cls(
@@ -578,50 +700,32 @@ try:
             # If BaseEntitySQL is available, use it as fallback
             if BaseEntitySQL and Entity not in self._entity_to_orm_map:
                 self._entity_to_orm_map[Entity] = BaseEntitySQL
+                self._logger.info("Added BaseEntitySQL as fallback ORM mapping")
             
             # Cache to avoid repeated lookups
             self._entity_class_map: Dict[UUID, Type[Entity]] = {}
+            self._logger.info(f"Initialized SQL storage with {len(entity_to_orm_map)} entity mappings")
         
         def has_entity(self, entity_id: UUID) -> bool:
             """Check if an entity exists in storage."""
             # Check cache first
             if entity_id in self._entity_class_map:
                 return True
-                
-            # Query database
-            with self._session_factory() as session:
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    stmt = select(orm_cls).where(orm_cls.id == entity_id)
-                    result = session.exec(stmt).first()
-                    if result is not None:
-                        entity = result.to_entity()
-                        self._entity_class_map[entity_id] = type(entity)
-                        return True
-            return False
-        
-        def get_cold_snapshot(self, entity_id: UUID) -> Optional[Entity]:
-            """Get the stored version of an entity."""
-            # Try with known class first if cached
-            cls_maybe = self._entity_class_map.get(entity_id)
             
-            with self._session_factory() as session:
-                if cls_maybe:
-                    orm_cls = self._entity_to_orm_map.get(cls_maybe)
-                    if orm_cls:
+            # Query database
+            try:
+                with self._session_factory() as session:
+                    for entity_cls, orm_cls in self._entity_to_orm_map.items():
                         stmt = select(orm_cls).where(orm_cls.id == entity_id)
                         result = session.exec(stmt).first()
-                        if result:
-                            return result.to_entity()
-                
-                # Fallback to scanning all tables
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    stmt = select(orm_cls).where(orm_cls.id == entity_id)
-                    result = session.exec(stmt).first()
-                    if result:
-                        entity = result.to_entity()
-                        self._entity_class_map[entity_id] = type(entity)
-                        return entity
-            return None
+                        if result is not None:
+                            entity = result.to_entity()
+                            self._entity_class_map[entity_id] = type(entity)
+                            return True
+                    return False
+            except Exception as e:
+                self._logger.error(f"Error checking entity existence: {str(e)}")
+                return False
         
         def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
             """Register an entity or retrieve it by ID."""
@@ -629,45 +733,101 @@ try:
                 return self.get(entity_or_id, None)
                 
             entity = entity_or_id
+            self._logger.info(f"Registering {type(entity).__name__}({entity.id})")
             
-            # Check for modifications
-            old = self.get_cold_snapshot(entity.id)
-            if old and entity.has_modifications(old):
-                entity.fork(force=True)
-                return self.register(entity)  # Re-register with new ID
-                
-            # Find appropriate ORM class
-            orm_cls = self._get_orm_class(entity)
-            if not orm_cls:
-                self._logger.error(f"No ORM mapping found for {type(entity)}")
+            try:
+                with self._session_factory() as session:
+                    try:
+                        # First check if entity exists and needs forking
+                        orm_cls = self._get_orm_class(entity)
+                        if not orm_cls:
+                            self._logger.error(f"No ORM mapping found for {type(entity)}")
+                            return None
+
+                        existing = session.get(orm_cls, entity.id)
+                        if existing:
+                            self._logger.debug(f"Found existing entity {type(entity).__name__}({entity.id})")
+                            # Convert existing to entity for comparison
+                            existing_entity = existing.to_entity()
+                            
+                            # Check if there are any modifications
+                            has_mods, mods = entity.has_modifications(existing_entity)
+                            if has_mods:
+                                self._logger.info(f"Entity {type(entity).__name__}({entity.id}) has modifications, forking")
+                                # Fork the entity and all its nested entities
+                                entity = entity.fork()
+                        
+                        # Store the entity and its tree
+                        self._store_cold_snapshot(entity, session)
+                        
+                        # Commit the transaction
+                        session.commit()
+                        self._logger.info(f"Successfully registered {type(entity).__name__}({entity.id})")
+                        return entity
+                        
+                    except Exception as e:
+                        # Rollback on any database error
+                        session.rollback()
+                        self._logger.error(f"Database error registering entity: {str(e)}")
+                        raise
+                    
+            except Exception as e:
+                self._logger.error(f"Error registering entity: {str(e)}")
                 return None
-                
-            # Convert to ORM model and save
-            orm_obj = orm_cls.from_entity(entity)
-            with self._session_factory() as session:
-                session.add(orm_obj)
-                session.commit()
-                
-            # Update cache
-            self._entity_class_map[entity.id] = type(entity)
-            return entity
         
-        def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
+        def get_cold_snapshot(self, entity_id: UUID) -> Optional[Entity]:
+            """Get the stored version of an entity."""
+            try:
+                # Try with known class first if cached
+                cls_maybe = self._entity_class_map.get(entity_id)
+                self._logger.debug(f"Looking up entity {entity_id} (cached type: {cls_maybe.__name__ if cls_maybe else None})")
+                
+                with self._session_factory() as session:
+                    if cls_maybe:
+                        orm_cls = self._entity_to_orm_map.get(cls_maybe)
+                        if orm_cls:
+                            # Single query - relationships auto-loaded by SQLAlchemy
+                            result = session.get(orm_cls, entity_id)
+                            if result:
+                                self._logger.debug(f"Found entity {entity_id} in {orm_cls.__name__} table")
+                                return result.to_entity()
+                
+                    # Fallback to scanning all tables
+                    self._logger.debug(f"Scanning all tables for entity {entity_id}")
+                    for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                        result = session.get(orm_cls, entity_id)
+                        if result:
+                            entity = result.to_entity()
+                            self._entity_class_map[entity_id] = type(entity)
+                            self._logger.info(f"Found entity {entity_id} in {orm_cls.__name__} table")
+                            return entity
+                
+                    self._logger.warning(f"Entity {entity_id} not found in any table")
+                    return None
+            except Exception as e:
+                self._logger.error(f"Error getting cold snapshot: {str(e)}")
+                return None
+        
+        def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]] = None) -> Optional[Entity]:
             """Get an entity by ID with optional type checking."""
-            entity = self.get_cold_snapshot(entity_id)
-            if not entity:
-                return None
+            try:
+                entity = self.get_cold_snapshot(entity_id)
+                if not entity:
+                    return None
                 
-            if expected_type and not isinstance(entity, expected_type):
-                self._logger.error(f"Type mismatch: got {type(entity).__name__}, expected {expected_type.__name__}")
-                return None
+                if expected_type and not isinstance(entity, expected_type):
+                    self._logger.error(f"Type mismatch: got {type(entity).__name__}, expected {expected_type.__name__}")
+                    return None
                 
-            # Create a warm copy
-            warm_copy = deepcopy(entity)
-            warm_copy.live_id = uuid4()
-            warm_copy.from_storage = True
-            
-            return warm_copy
+                # Create a warm copy
+                warm_copy = deepcopy(entity)
+                warm_copy.live_id = uuid4()
+                warm_copy.from_storage = True
+                
+                return warm_copy
+            except Exception as e:
+                self._logger.error(f"Error getting entity: {str(e)}")
+                return None
         
         def list_by_type(self, entity_type: Type[Entity]) -> List[Entity]:
             """List all entities of a specific type."""
@@ -742,17 +902,59 @@ try:
         
         def _get_orm_class(self, entity: Entity) -> Optional[Type[SQLModelType]]:
             """Get the appropriate ORM class for an entity."""
-            # Try exact class match
-            orm_cls = self._entity_to_orm_map.get(type(entity))
-            if orm_cls:
-                return orm_cls
-                
-            # Try parent classes
-            for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                if isinstance(entity, entity_cls):
+            try:
+                # Try exact class match
+                orm_cls = self._entity_to_orm_map.get(type(entity))
+                if orm_cls:
+                    self._logger.debug(f"Found exact ORM match for {type(entity).__name__}: {orm_cls.__name__}")
                     return orm_cls
+                
+                # Try parent classes
+                for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                    if isinstance(entity, entity_cls):
+                        self._logger.debug(f"Found parent ORM match for {type(entity).__name__}: {orm_cls.__name__}")
+                        return orm_cls
                     
-            return None
+                self._logger.warning(f"No ORM mapping found for {type(entity).__name__}")
+                return None
+            except Exception as e:
+                self._logger.error(f"Error getting ORM class: {str(e)}")
+                return None
+
+        def _store_cold_snapshot(self, entity: Entity, session: Session) -> None:
+            """Store a cold snapshot of an entity and all its sub-entities using the provided session."""
+            # Collect all entities that need to be stored
+            entities_to_store: Dict[UUID, Entity] = {}
+            
+            def collect_entities(e: Entity) -> None:
+                if e.id not in entities_to_store:
+                    # Create snapshot for storage
+                    snapshot = create_cold_snapshot(e)
+                    entities_to_store[e.id] = snapshot
+                    # Collect nested entities
+                    for sub in e.get_sub_entities():
+                        collect_entities(sub)
+            
+            # Collect all entities in the tree
+            collect_entities(entity)
+            
+            # Store everything using the provided session
+            for e in entities_to_store.values():
+                # Get ORM class for this entity type
+                orm_cls = self._get_orm_class(e)
+                if not orm_cls:
+                    self._logger.error(f"No ORM mapping found for {type(e)}")
+                    continue
+                
+                # Convert to ORM object and store
+                orm_obj = orm_cls.from_entity(e)
+                orm_obj = session.merge(orm_obj)
+            
+            # Update cache (commit happens in register)
+            for e in entities_to_store.values():
+                self._entity_class_map[e.id] = type(e)
+                
+            self._logger.info(f"Successfully prepared {len(entities_to_store)} entities for storage")
 
 except ImportError:
     # SQLModel not available, skip SQL storage implementation
@@ -1020,13 +1222,11 @@ def _check_and_process_entities(entities: Dict[int, Entity], fork_if_modified: b
     dependency_graph: Dict[int, List[int]] = {id(e): [] for e in entities.values()}
     for entity_id, entity in entities.items():
         # Find all nested entities
-        nested = get_nested_entities(entity)
-        for field_entities in nested.values():
-            for nested_entity in field_entities:
-                nested_id = id(nested_entity)
-                if nested_id in entities:
-                    # Add dependency: entity depends on nested_entity
-                    dependency_graph[entity_id].append(nested_id)
+        for sub in entity.get_sub_entities():
+            nested_id = id(sub)
+            if nested_id in entities:
+                # Add dependency: entity depends on nested_entity
+                dependency_graph[entity_id].append(nested_id)
     
     # Topological sort (process leaves first)
     processed: Set[int] = set()

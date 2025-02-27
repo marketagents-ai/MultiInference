@@ -357,14 +357,15 @@ class LLMConfigSQL(SQLModel, table=True):
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="llmconfigsql.id")
 
-    client: str = Field(sa_column=Column(SQLAlchemyString))  # Store enum as string
+    # Store enums as strings
+    client: str = Field(sa_column=Column(SQLAlchemyString))
     model: Optional[str] = None
     max_tokens: int = 400
     temperature: float = 0
-    response_format: str = Field(sa_column=Column(SQLAlchemyString))  # Store enum as string
+    response_format: str = Field(sa_column=Column(SQLAlchemyString))
     use_cache: bool = True
     reasoner: bool = False
-    reasoning_effort: Literal["low", "medium", "high"] = "medium"  # Add proper typing
+    reasoning_effort: str = Field(default="medium", sa_column=Column(SQLAlchemyString))
 
     # Relationships
     threads: List["ChatThreadSQL"] = Relationship(back_populates="llm_config")

@@ -203,13 +203,14 @@ def as_project(entity: Entity) -> Project:
 # Define SQL model counterparts for the test entities
 #############################################################################
 
-from sqlmodel import SQLModel, Field as SQLField, Column, JSON, Session, create_engine, Relationship
+from sqlmodel import SQLModel, Field, Column, JSON, Session, create_engine, Relationship
+from sqlalchemy import String as SQLAlchemyString
 
 class SimpleEntitySQL(SQLModel, table=True):
     """SQL model for SimpleEntity"""
-    id: UUID = SQLField(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = SQLField(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = SQLField(default=None)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True, nullable=False)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="simpleentitysql.id", nullable=True)
     
     name: str
     value: int
@@ -240,14 +241,14 @@ class SimpleEntitySQL(SQLModel, table=True):
 
 class AddressSQL(SQLModel, table=True):
     """SQL model for Address"""
-    id: UUID = SQLField(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = SQLField(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = SQLField(default=None)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True, nullable=False)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="addresssql.id", nullable=True)
     
     street: str
     city: str
     zipcode: str
-    country: str
+    country: str = "USA"
     
     def to_entity(self) -> Address:
         return Address(
@@ -276,14 +277,14 @@ class AddressSQL(SQLModel, table=True):
 
 class PersonSQL(SQLModel, table=True):
     """SQL model for Person with nested address reference"""
-    id: UUID = SQLField(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = SQLField(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = SQLField(default=None)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True, nullable=False)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="personsql.id", nullable=True)
     
     name: str
     age: int
     email: Optional[str] = None
-    address_id: Optional[UUID] = None
+    address_id: Optional[UUID] = Field(default=None, foreign_key="addresssql.id", nullable=True)
     
     def to_entity(self) -> Person:
         address = None
@@ -320,9 +321,9 @@ class PersonSQL(SQLModel, table=True):
 
 class TagSQL(SQLModel, table=True):
     """SQL model for Tag"""
-    id: UUID = SQLField(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = SQLField(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = SQLField(default=None)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True, nullable=False)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="tagsql.id", nullable=True)
     
     name: str
     color: str
@@ -350,15 +351,15 @@ class TagSQL(SQLModel, table=True):
 
 # Bridge tables for many-to-many relationships
 class TaskTagLink(SQLModel, table=True):
-    task_id: UUID = SQLField(foreign_key="tasksql.id", primary_key=True)
-    tag_id: UUID = SQLField(foreign_key="tagsql.id", primary_key=True)
+    task_id: UUID = Field(foreign_key="tasksql.id", primary_key=True, nullable=False)
+    tag_id: UUID = Field(foreign_key="tagsql.id", primary_key=True, nullable=False)
 
 
 class TaskSQL(SQLModel, table=True):
     """SQL model for Task with tags many-to-many"""
-    id: UUID = SQLField(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = SQLField(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = SQLField(default=None)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, nullable=False)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True, nullable=False)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="tasksql.id", nullable=True)
     
     title: str
     description: Optional[str] = None
@@ -409,9 +410,12 @@ def setup_sql_storage():
     # Create all tables
     SQLModel.metadata.create_all(engine)
     
-    # Create a session factory
+    # Create a session factory with logging
+    logger = logging.getLogger("SQLModel.Session")
     def session_factory():
-        return Session(engine)
+        session = Session(engine)
+        logger.info("Created new database session")
+        return session
     
     # Create entity to ORM mapping with explicit casting for type safety
     entity_to_orm_map: Dict[Type[Entity], Type[SQLModelType]] = {
@@ -421,6 +425,12 @@ def setup_sql_storage():
         Tag: cast(Type[SQLModelType], TagSQL),
         Task: cast(Type[SQLModelType], TaskSQL),
     }
+    
+    # Log the registered mappings
+    logger = logging.getLogger("EntityRegistry")
+    logger.info("Registering entity-to-ORM mappings:")
+    for entity_cls, orm_cls in entity_to_orm_map.items():
+        logger.info(f"  {entity_cls.__name__} -> {orm_cls.__name__}")
     
     # Create SQL storage
     sql_storage = SqlEntityStorage(
@@ -438,23 +448,28 @@ def setup_sql_storage():
 #############################################################################
 
 def print_entity_details(entity: Entity, prefix: str = ""):
-    """Print detailed information about an entity"""
-    print(f"{prefix}Entity ID: {entity.id}")
-    print(f"{prefix}Lineage:   {entity.lineage_id}")
-    print(f"{prefix}Parent:    {entity.parent_id or 'None'}")
-    print(f"{prefix}Type:      {type(entity).__name__}")
+    """Enhanced entity detail printing with more debugging info"""
+    print(f"\n{prefix}=== Entity Details ===")
+    print(f"{prefix}ID: {entity.id}")
+    print(f"{prefix}Live ID: {entity.live_id}")
+    print(f"{prefix}Lineage: {entity.lineage_id}")
+    print(f"{prefix}Parent: {entity.parent_id}")
+    print(f"{prefix}Type: {type(entity).__name__}")
+    print(f"{prefix}Force Parent Fork: {entity.force_parent_fork}")
     
-    # Print key fields
+    # Print all fields
     for field, value in entity.model_dump().items():
         if field not in {'id', 'lineage_id', 'parent_id', 'live_id', 'old_ids', 'from_storage', 'created_at'}:
             if isinstance(value, Entity):
-                nested_id = value.id if value else None
-                print(f"{prefix}{field}: {type(value).__name__} (ID: {nested_id})")
-            elif isinstance(value, list) and all(isinstance(item, Entity) for item in value):
-                print(f"{prefix}{field}: List[{len(value)} entities]")
+                print(f"{prefix}{field}: <{type(value).__name__}> (ID: {value.id})")
+            elif isinstance(value, list) and value and isinstance(value[0], Entity):
+                print(f"{prefix}{field}: [")
+                for item in value:
+                    print(f"{prefix}  <{type(item).__name__}> (ID: {item.id})")
+                print(f"{prefix}]")
             else:
                 print(f"{prefix}{field}: {value}")
-    print()
+    print(f"{prefix}========================\n")
 
 
 def print_lineage(entity: Entity):
@@ -473,27 +488,33 @@ def print_test_header(title: str):
 
 
 def track_modifications(original: Entity, modified: Entity) -> bool:
-    """Track modifications between entities and print details"""
+    """Enhanced modification tracking with detailed output"""
+    print("\n=== Checking Modifications ===")
+    print(f"Original Entity ID: {original.id}")
+    print(f"Modified Entity ID: {modified.id}")
+    
     has_mods, diffs = compare_entity_fields(modified, original)
     
     if has_mods:
-        print(f"✓ Detected modifications in {type(original).__name__}:")
+        print(f"\n✓ Found modifications in {type(original).__name__}:")
         for field, diff_info in diffs.items():
             diff_type = diff_info.get("type", "unknown")
             old_val = diff_info.get("old", "N/A")
             new_val = diff_info.get("new", "N/A")
             
-            if diff_type == "modified":
-                print(f"  - {field}: Changed from '{old_val}' to '{new_val}'")
-            elif diff_type == "added":
-                print(f"  - {field}: Added with value '{new_val}'")
-            elif diff_type == "removed":
-                print(f"  - {field}: Removed (was '{old_val}')")
-            else:
-                print(f"  - {field}: {diff_type}")
+            if isinstance(old_val, Entity):
+                old_val = f"<{type(old_val).__name__}> (ID: {old_val.id})"
+            if isinstance(new_val, Entity):
+                new_val = f"<{type(new_val).__name__}> (ID: {new_val.id})"
+            
+            print(f"  Field: {field}")
+            print(f"    Type: {diff_type}")
+            print(f"    Old: {old_val}")
+            print(f"    New: {new_val}")
     else:
         print(f"✗ No modifications detected in {type(original).__name__}")
     
+    print("===========================\n")
     return has_mods
 
 
@@ -550,65 +571,83 @@ def test_simple_entity_forking():
 
 
 def test_nested_entity_forking():
-    """Test forking behavior with nested entities"""
+    """Enhanced nested entity forking test with detailed logging"""
     print_test_header("Nested Entity Relationships and Bottom-up Forking")
     
-    # Create a nested structure
+    # Create nested structure
+    print("Creating nested structure...")
     address = Address(street="123 Main St", city="Anytown", zipcode="12345")
     person = Person(name="John Doe", age=30, address=address)
     
-    print("Original nested structure:")
+    print("\nInitial State:")
     print_entity_details(person)
-    
-    # Type checking: ensure address exists before using it
     if person.address:
-        print_entity_details(person.address, prefix="Address: ")
+        print_entity_details(person.address, prefix="  ")
     
-    # Modify the nested entity with proper type assertion
+    # Store IDs for tracking
+    original_ids = {
+        'person': person.id,
+        'address': address.id if address else None
+    }
+    
     print("\nModifying nested address...")
     if person.address:
+        print(f"Address before modification - ID: {person.address.id}")
         person_addr = as_address(person.address)
         person_addr.street = "456 New Street"
+        print(f"Address after modification - ID: {person_addr.id}")
     
-    # Retrieve the original from registry and check for modifications
+    # Get stored versions
     stored_person = EntityRegistry.get(person.id)
     stored_address = EntityRegistry.get(address.id)
+    
+    print("\nStored Entity States:")
+    if stored_person:
+        print_entity_details(stored_person, prefix="Stored Person: ")
+    if stored_address:
+        print_entity_details(stored_address, prefix="Stored Address: ")
     
     print("\nChecking address modifications:")
     if stored_address and person.address:
         addr_modified = track_modifications(stored_address, person.address)
+        print(f"Address modified: {addr_modified}")
     
-    print("\nChecking person modifications (should detect nested change):")
+    print("\nChecking person modifications:")
     if stored_person:
         person_modified = track_modifications(stored_person, person)
+        print(f"Person modified: {person_modified}")
     
-    # Fork and check the result
     print("\nForking with nested modifications...")
     forked_person = person.fork()
     
-    # Use type assertion for type safety
-    forked_person_typed = as_person(forked_person)
+    print("\nForked Entity States:")
+    print_entity_details(forked_person)
+    if isinstance(forked_person, Person) and forked_person.address:
+        print_entity_details(forked_person.address, prefix="  ")
     
-    print("\nForked structure:")
-    print_entity_details(forked_person_typed)
+    # Verify ID changes
+    print("\nID Change Verification:")
+    print(f"Person ID changes:")
+    print(f"  Original: {original_ids['person']}")
+    print(f"  Current:  {person.id}")
+    print(f"  Forked:   {forked_person.id}")
     
-    # Type checking: ensure address exists in forked person
-    if forked_person_typed.address:
-        forked_addr = as_address(forked_person_typed.address)
-        print_entity_details(forked_addr, prefix="Address: ")
+    if original_ids['address']:
+        print(f"Address ID changes:")
+        print(f"  Original: {original_ids['address']}")
+        print(f"  Current:  {address.id}")
+        if isinstance(forked_person, Person) and forked_person.address:
+            print(f"  Forked:   {forked_person.address.id}")
     
-    # Verify IDs have changed appropriately
-    print("\nVerifying ID changes:")
-    print(f"Original person ID: {person.id}")
-    print(f"Forked person ID: {forked_person_typed.id}")
-    print(f"Original address ID: {address.id}")
-    if forked_person_typed.address:
-        print(f"Forked address ID: {forked_person_typed.address.id}")
+    # Print force_parent_fork states
+    print("\nForce Parent Fork States:")
+    print(f"Person: {person.force_parent_fork}")
+    if person.address:
+        print(f"Address: {person.address.force_parent_fork}")
     
-    # Print the lineage
-    print_lineage(forked_person_typed)
-    if forked_person_typed.address:
-        print_lineage(forked_person_typed.address)
+    print_lineage(forked_person)
+    if isinstance(forked_person, Person) and forked_person.address:
+        print_lineage(forked_person.address)
 
 
 def test_one_to_many_forking():
@@ -669,27 +708,34 @@ def test_one_to_many_forking():
     print_lineage(forked_task_typed)
 
 
-def test_deep_nesting_forking():
-    """Test forking with complex deeply nested structures"""
+def test_complex_deep_nesting():
+    """Enhanced complex nesting test with detailed logging"""
     print_test_header("Complex Deep Nesting and Circular References")
     
-    # Create tags
+    print("Creating complex structure...")
+    
+    # Create with ID tracking
     tag1 = Tag(name="project", color="#FF0000")
     tag2 = Tag(name="important", color="#0000FF")
-    
-    # Create address and person
     address = Address(street="123 Main St", city="Anytown", zipcode="12345")
     owner = Person(name="Jane Smith", age=35, address=address)
     member = Person(name="Bob Jones", age=28)
-    
-    # Create tasks
     task1 = Task(title="Design UI", status="completed", tags=[tag1])
     task2 = Task(title="Implement backend", status="in_progress", tags=[tag2])
-    
-    # Create a comment
     comment = Comment(content="Looking good!", author=member)
     
-    # Create project with everything
+    # Store original IDs
+    original_ids = {
+        'tag1': tag1.id,
+        'tag2': tag2.id,
+        'address': address.id,
+        'owner': owner.id,
+        'member': member.id,
+        'task1': task1.id,
+        'task2': task2.id,
+        'comment': comment.id
+    }
+    
     project = Project(
         name="Awesome Project",
         description="A project with complex nested entities",
@@ -700,67 +746,41 @@ def test_deep_nesting_forking():
         comments=[comment]
     )
     
-    # Use type assertion for type safety
-    project_typed = as_project(project)
+    print("\nInitial Structure:")
+    print_entity_details(project)
     
-    print("Original complex structure created.")
-    print_entity_details(project_typed)
+    print("\nModifying deep nested entity (owner's address)...")
+    if project.owner and project.owner.address:
+        print(f"Address before modification - ID: {project.owner.address.id}")
+        owner_addr = as_address(project.owner.address)
+        owner_addr.city = "New City"
+        print(f"Address after modification - ID: {owner_addr.id}")
     
-    # Make a deep modification with proper type assertions
-    print("\nMaking a deep modification (owner's address)...")
-    if project_typed.owner:
-        owner_typed = as_person(project_typed.owner)
-        if owner_typed.address:
-            address_typed = as_address(owner_typed.address)
-            address_typed.city = "New City"
+    # Get stored versions
+    stored_project = EntityRegistry.get(project.id)
     
-    # Check for the modification
-    stored_address = EntityRegistry.get(address.id)
-    print("\nChecking address modifications:")
-    if stored_address and project_typed.owner and project_typed.owner.address:
-        owner_addr = as_address(project_typed.owner.address)
-        addr_modified = track_modifications(stored_address, owner_addr)
+    print("\nStored Project State:")
+    if stored_project:
+        print_entity_details(stored_project)
     
-    # Fork and check the results
     print("\nForking the entire structure...")
     forked_project = project.fork()
     
-    # Use type assertion for the forked project
-    forked_project_typed = as_project(forked_project)
+    print("\nID Change Verification:")
+    for entity_name, original_id in original_ids.items():
+        print(f"{entity_name}:")
+        print(f"  Original: {original_id}")
+        # Add logic to find and print current IDs in forked structure
     
-    print("\nVerifying nested references were properly forked:")
-    if project_typed.owner:
-        print(f"Original owner ID: {project_typed.owner.id}")
-    if forked_project_typed.owner:
-        print(f"Forked owner ID: {forked_project_typed.owner.id}")
+    print("\nForce Parent Fork Propagation:")
+    def print_force_parent_fork(entity: Entity, prefix=""):
+        print(f"{prefix}{type(entity).__name__}: {entity.force_parent_fork}")
+        for sub_entity in entity.get_sub_entities():
+            print_force_parent_fork(sub_entity, prefix + "  ")
     
-    if project_typed.owner and project_typed.owner.address:
-        print(f"Original address ID: {project_typed.owner.address.id}")
-    if forked_project_typed.owner and forked_project_typed.owner.address:
-        print(f"Forked address ID: {forked_project_typed.owner.address.id}")
+    print_force_parent_fork(forked_project)
     
-    # Verify that it forked correctly
-    print("\nVerifying integrity:")
-    if project_typed.id != forked_project_typed.id:
-        print("✓ Project has new ID")
-    else:
-        print("✗ Project has same ID")
-        
-    if (project_typed.owner and forked_project_typed.owner and 
-        project_typed.owner.id != forked_project_typed.owner.id):
-        print("✓ Owner has new ID")
-    else:
-        print("✗ Owner has same ID")
-        
-    if (project_typed.owner and project_typed.owner.address and 
-        forked_project_typed.owner and forked_project_typed.owner.address and
-        project_typed.owner.address.id != forked_project_typed.owner.address.id):
-        print("✓ Address has new ID")
-    else:
-        print("✗ Address has same ID")
-    
-    # Print lineage for the top entity
-    print_lineage(forked_project_typed)
+    print_lineage(forked_project)
 
 
 def test_efficient_forking():
@@ -784,6 +804,15 @@ def test_efficient_forking():
     project_typed = as_project(project)
     
     print("Original structure created.")
+    
+    # Store original IDs
+    original_ids = {
+        'project': project_typed.id,
+        'tag1': tag1.id,
+        'tag2': tag2.id,
+        'person': person.id,
+        'address': address.id
+    }
     
     # Modify only one tag - with proper type assertion
     print("\nModifying only one tag...")
@@ -859,6 +888,13 @@ def test_efficient_forking():
     else:
         print("✗ Changed tag was not forked (unexpected)")
     
+    # Verify force_parent_fork propagation
+    print("\nVerifying force_parent_fork propagation:")
+    if len(project_typed.tags) > 1:
+        changed_tag = project_typed.tags[1]
+        print(f"Changed tag force_parent_fork: {changed_tag.force_parent_fork}")
+        print(f"Project force_parent_fork: {project_typed.force_parent_fork}")
+    
     # Print lineage for the changed tag
     if len(forked_project_typed.tags) > 1:
         changed_tag = as_tag(forked_project_typed.tags[1])
@@ -866,7 +902,7 @@ def test_efficient_forking():
 
 
 def test_sql_storage():
-    """Test SQL storage integration"""
+    """Test SQL storage integration with detailed logging"""
     print_test_header("SQL Storage Integration")
     
     try:
@@ -875,14 +911,22 @@ def test_sql_storage():
         print("SQL storage set up successfully.")
         
         # Create and register an entity with nested components
-        address = Address(street="123 SQL St", city="Database City", zipcode="54321")
-        person = Person(name="SQL User", age=25, address=address)
+        address = Address(street="123 SQL St", city="Database City", zipcode="54321", country="USA")
+        print("Created address:")
+        print_entity_details(address)
         
-        print("Created entities:")
+        # Register address first
+        EntityRegistry.register(address)
+        print("Registered address")
+        
+        # Create and register person
+        person = Person(name="SQL User", age=25, address=address)
+        print("Created person:")
         print_entity_details(person)
-        if person.address:
-            addr = as_address(person.address)
-            print_entity_details(addr, prefix="Address: ")
+        
+        # Register person
+        EntityRegistry.register(person)
+        print("Registered person")
         
         # Verify they're in the registry
         print("\nVerifying entities are in registry...")
@@ -891,8 +935,16 @@ def test_sql_storage():
         
         if retrieved_person and retrieved_address:
             print("✓ Successfully retrieved both entities from registry")
+            print("\nRetrieved person details:")
+            print_entity_details(retrieved_person)
+            print("Retrieved address details:")
+            print_entity_details(retrieved_address)
         else:
             print("✗ Failed to retrieve entities from registry")
+            if not retrieved_person:
+                print("  - Person retrieval failed")
+            if not retrieved_address:
+                print("  - Address retrieval failed")
             
         # Modify and fork
         print("\nModifying and forking...")
@@ -934,6 +986,17 @@ def test_sql_storage():
                 print("✗ Retrieved entity is not a Person")
         else:
             print("✗ Failed to retrieve forked entity from registry")
+            
+            # Try to diagnose the issue
+            with session_factory() as session:
+                # Check if entity exists in any table
+                sql_storage = cast(SqlEntityStorage, EntityRegistry._storage)
+                for entity_cls, orm_cls in sql_storage._entity_to_orm_map.items():
+                    result = session.get(orm_cls, forked_person.id)
+                    if result:
+                        print(f"  Found entity in {orm_cls.__name__} table")
+                    else:
+                        print(f"  Not found in {orm_cls.__name__} table")
         
         # Check lineage tracking
         print("\nChecking lineage tracking...")
@@ -945,6 +1008,92 @@ def test_sql_storage():
         
     except Exception as e:
         print(f"ERROR in SQL storage test: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+
+def test_sql_storage_forking():
+    """Test specifically focused on SQL storage forking and retrieval."""
+    print_test_header("SQL Storage Forking and Retrieval")
+    
+    try:
+        # Setup SQL storage
+        session_factory = setup_sql_storage()
+        print("SQL storage set up successfully.")
+        
+        # 1. Create and store initial entity
+        address = Address(street="123 Fork St", city="SQL City", zipcode="12345")
+        print("\nStep 1: Created initial address:")
+        print_entity_details(address)
+        
+        # Store and verify initial storage
+        EntityRegistry.register(address)
+        print("\nVerifying initial storage...")
+        stored = EntityRegistry.get(address.id)
+        if stored:
+            print("✓ Initial entity successfully stored and retrieved")
+            print_entity_details(stored)
+        else:
+            print("✗ Failed to retrieve initial entity")
+            
+        # 2. Modify and fork
+        print("\nStep 2: Modifying address...")
+        address.city = "New SQL City"
+        print("Modified entity before fork:")
+        print_entity_details(address)
+        
+        # Get stored version for comparison
+        stored_before_fork = EntityRegistry.get_cold_snapshot(address.id)
+        if stored_before_fork:
+            print("\nStored version before fork:")
+            print_entity_details(stored_before_fork)
+            
+            print("\nChecking modifications:")
+            has_mods, mods = address.has_modifications(stored_before_fork)
+            print(f"Has modifications: {has_mods}")
+            if has_mods:
+                for entity, diffs in mods.items():
+                    print(f"Modifications in {type(entity).__name__}:")
+                    for field, diff in diffs.field_diffs.items():
+                        print(f"  {field}: {diff}")
+        
+        # 3. Fork and verify immediate state
+        print("\nStep 3: Forking entity...")
+        forked = address.fork()
+        print("Forked entity state:")
+        print_entity_details(forked)
+        
+        # 4. Verify storage of forked entity
+        print("\nStep 4: Verifying forked entity storage...")
+        retrieved_fork = EntityRegistry.get(forked.id)
+        if retrieved_fork:
+            print("✓ Forked entity successfully stored and retrieved")
+            print_entity_details(retrieved_fork)
+        else:
+            print("✗ Failed to retrieve forked entity")
+            print("Attempting to diagnose...")
+            with session_factory() as session:
+                # Try to find entity in any table
+                sql_storage = cast(SqlEntityStorage, EntityRegistry._storage)
+                for entity_cls, orm_cls in sql_storage._entity_to_orm_map.items():
+                    result = session.get(orm_cls, forked.id)
+                    if result:
+                        print(f"  Found in {orm_cls.__name__} table")
+                    else:
+                        print(f"  Not found in {orm_cls.__name__} table")
+        
+        # 5. Check lineage
+        print("\nStep 5: Verifying lineage...")
+        lineage_entities = EntityRegistry.get_lineage_entities(address.lineage_id)
+        print(f"Found {len(lineage_entities)} entities in lineage")
+        for entity in lineage_entities:
+            print(f"\nLineage entity {entity.id}:")
+            print_entity_details(entity)
+        
+        print_lineage(forked)
+        
+    except Exception as e:
+        print(f"ERROR in SQL storage forking test: {str(e)}")
         import traceback
         traceback.print_exc()
 
@@ -994,9 +1143,10 @@ def run_all_tests():
     test_simple_entity_forking()
     test_nested_entity_forking()
     test_one_to_many_forking()
-    test_deep_nesting_forking()
+    test_complex_deep_nesting()
     test_efficient_forking()
     test_sql_storage()
+    test_sql_storage_forking()
     test_decorator()
     
     print("\n" + "=" * 80)

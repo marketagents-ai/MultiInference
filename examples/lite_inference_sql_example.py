@@ -4,7 +4,7 @@ import os
 import time
 
 from dotenv import load_dotenv
-from typing import Literal, List, Dict, Type
+from typing import Literal, List, Dict, Type, cast
 
 # SQLModel / database imports
 from sqlmodel import create_engine, SQLModel, Session
@@ -21,42 +21,56 @@ from minference.threads.sql_models import (
     ToolSQL,SystemPromptSQL, GeneratedJsonObjectSQL, RawOutputSQL, ProcessedOutputSQL
 )
 from minference.ecs.caregistry import CallableRegistry
-from minference.ecs.entity import EntityRegistry, SqlEntityStorage, Entity
+from minference.ecs.entity import EntityRegistry, SqlEntityStorage, Entity, SQLModelType
 from minference.clients.utils import parse_json_string, msg_dict_to_oai, msg_dict_to_anthropic
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.ERROR)
+
+# 0) Remove the database file if it exists
+db_file = "mydatabase.db"
+if os.path.exists(db_file):
+    os.remove(db_file)
 
 # 1) Create your engine (here using SQLite as an example)
-engine = create_engine("sqlite:///mydatabase.db", echo=True)
+engine = create_engine(f"sqlite:///{db_file}", echo=True)
 
-# 2) Create all tables if needed
+# 2) Drop all tables first to ensure clean slate
+SQLModel.metadata.drop_all(engine)
+
+# Print table metadata before creating
+for table in SQLModel.metadata.sorted_tables:
+    print(f"\nTable: {table.name}")
+    for column in table.columns:
+        print(f"  {column.name}: {column.type}")
+
+# 3) Create all tables if needed
 SQLModel.metadata.create_all(engine)
 
-# 3) Build a session factory
+# 4) Build a session factory
 def session_factory():
     return Session(engine)
 
-# 4) Map your domain classes to the corresponding ORM models
-entity_to_orm_map: Dict[Type[Entity], Type[SQLModel]] = {
+# 5) Map your domain classes to the corresponding ORM models
+entity_to_orm_map = {
     # Core chat entities
-    ChatThread: ChatThreadSQL,
-    ChatMessage: ChatMessageSQL,
-    LLMConfig: LLMConfigSQL,
-    Usage: UsageSQL,
-    SystemPrompt: SystemPromptSQL,
-    GeneratedJsonObject: GeneratedJsonObjectSQL,
+    cast(Type[Entity], ChatThread): cast(Type[SQLModelType], ChatThreadSQL),
+    cast(Type[Entity], ChatMessage): cast(Type[SQLModelType], ChatMessageSQL),
+    cast(Type[Entity], LLMConfig): cast(Type[SQLModelType], LLMConfigSQL),
+    cast(Type[Entity], Usage): cast(Type[SQLModelType], UsageSQL),
+    cast(Type[Entity], SystemPrompt): cast(Type[SQLModelType], SystemPromptSQL),
+    cast(Type[Entity], GeneratedJsonObject): cast(Type[SQLModelType], GeneratedJsonObjectSQL),
     
     # Tool entities (share a table)
-    CallableTool: ToolSQL,
-    StructuredTool: ToolSQL,
+    cast(Type[Entity], CallableTool): cast(Type[SQLModelType], ToolSQL),
+    cast(Type[Entity], StructuredTool): cast(Type[SQLModelType], ToolSQL),
     
     # Output entities
-    RawOutput: RawOutputSQL,
-    ProcessedOutput: ProcessedOutputSQL
+    cast(Type[Entity], RawOutput): cast(Type[SQLModelType], RawOutputSQL),
+    cast(Type[Entity], ProcessedOutput): cast(Type[SQLModelType], ProcessedOutputSQL)
 }
 
-# 5) Create the SQL storage object & tell the registry to use it
+# 6) Create the SQL storage object & tell the registry to use it
 sql_storage = SqlEntityStorage(session_factory=session_factory, entity_to_orm_map=entity_to_orm_map)
 EntityRegistry.use_storage(sql_storage)
 
