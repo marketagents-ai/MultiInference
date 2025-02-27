@@ -1,21 +1,18 @@
 """
-Fully refactored sql_models.py illustrating:
- - UUID-based primary keys
- - parent_id / lineage_id for versioning
- - bridging tables for many-to-many relationships
- - basic from_entity() / to_entity() methods
-
-NOTE: This code is a reference skeleton, not drop-in ready.
-You would adapt queries, session usage, etc. to your application.
-It has been adjusted to avoid linting issues (e.g., avoid calling Literal[...] as a constructor).
+Refactored SQL models with:
+- UUID-based primary keys for versioning
+- Bridging tables for many-to-many relationships
+- to_entity()/from_entity() conversion methods
+- No business logic methods - pure storage models
 """
 
 from typing import List, Optional, Dict, Any, Union, Literal, cast
 from uuid import UUID, uuid4
 from datetime import datetime, UTC
+import json
 
 from sqlmodel import SQLModel, Field, Relationship, Session
-from sqlalchemy import String, Column, JSON
+from sqlalchemy import Column, JSON
 from sqlalchemy.types import String as SQLAlchemyString
 from enum import Enum
 
@@ -26,7 +23,7 @@ from minference.threads.models import (
 )
 
 ###############################################################################
-# Type Definitions and Conversion Helpers
+# Type Definitions (No Conversion Helpers)
 ###############################################################################
 
 # Define Literal types based on the enums
@@ -34,113 +31,32 @@ MessageRoleLiteral = Literal["user", "assistant", "tool", "system", "developer"]
 LLMClientLiteral = Literal["openai", "azure_openai", "anthropic", "vllm", "litellm", "openrouter"]
 ResponseFormatLiteral = Literal["json_beg", "text", "json_object", "structured_output", "tool", "auto_tools", "workflow"]
 ToolTypeLiteral = Literal["Callable", "Structured"]
-ReasoningEffortLiteral = Literal["low", "medium", "high"]
-
-# Helper functions to convert between enums and literals
-def message_role_to_literal(role: MessageRole) -> MessageRoleLiteral:
-    return cast(MessageRoleLiteral, role.value)
-
-def literal_to_message_role(role: MessageRoleLiteral) -> MessageRole:
-    return MessageRole(role)
-
-def llm_client_to_literal(client: LLMClient) -> LLMClientLiteral:
-    return cast(LLMClientLiteral, client.value)
-
-def literal_to_llm_client(client: LLMClientLiteral) -> LLMClient:
-    return LLMClient(client)
-
-def response_format_to_literal(fmt: ResponseFormat) -> ResponseFormatLiteral:
-    return cast(ResponseFormatLiteral, fmt.value)
-
-def literal_to_response_format(fmt: ResponseFormatLiteral) -> ResponseFormat:
-    return ResponseFormat(fmt)
 
 ###############################################################################
 # Bridging Tables (Many-to-Many)
 ###############################################################################
 
-
 class ThreadMessageLinkSQL(SQLModel, table=True):
-    """
-    Many-to-many link between ChatThreadSQL and ChatMessageSQL.
-    Allows multiple threads to reference the same message version,
-    enabling one-to-many or many-to-many usage.
-    """
-    __table_args__ = {'extend_existing': True}
+    """Many-to-many link between ChatThreadSQL and ChatMessageSQL."""
     thread_id: UUID = Field(foreign_key="chatthreadsql.id", primary_key=True)
     message_id: UUID = Field(foreign_key="chatmessagesql.id", primary_key=True)
 
-
 class ThreadToolLinkSQL(SQLModel, table=True):
-    """
-    Many-to-many link between ChatThreadSQL and ToolSQL.
-    Because ChatThread.tools is List[Union[CallableTool, StructuredTool]],
-    we unify them in a single ToolSQL table with a type discriminator.
-    """
-    __table_args__ = {'extend_existing': True}
+    """Many-to-many link between ChatThreadSQL and ToolSQL."""
     thread_id: UUID = Field(foreign_key="chatthreadsql.id", primary_key=True)
     tool_id: UUID = Field(foreign_key="toolsql.id", primary_key=True)
 
-
-###############################################################################
-# OutputJsonObjectLinkageSQL
-###############################################################################
-
 class OutputJsonObjectLinkageSQL(SQLModel, table=True):
     """Link model between ProcessedOutput and GeneratedJsonObject"""
-    __table_args__ = {'extend_existing': True}
-    
     processed_output_id: UUID = Field(foreign_key="processedoutputsql.id", primary_key=True)
     json_object_id: UUID = Field(foreign_key="generatedjsonobjectsql.id", primary_key=True)
-
-
-###############################################################################
-# GeneratedJsonObjectSQL
-###############################################################################
-
-class GeneratedJsonObjectSQL(SQLModel, table=True):
-    """SQL model for GeneratedJsonObject"""
-    __table_args__ = {'extend_existing': True}
-
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    lineage_id: UUID = Field(default_factory=uuid4, index=True)
-    parent_id: Optional[UUID] = Field(default=None, foreign_key="generatedjsonobjectsql.id")
-    name: str
-    object: Dict[str, Any] = Field(sa_column=Column(JSON))
-    tool_call_id: Optional[str] = None
-
-    def to_entity(self) -> GeneratedJsonObject:
-        return GeneratedJsonObject(
-            id=self.id,
-            lineage_id=self.lineage_id,
-            parent_id=self.parent_id,
-            name=self.name,
-            object=self.object,
-            tool_call_id=self.tool_call_id,
-            from_storage=True
-        )
-
-    @classmethod
-    def from_entity(cls, entity: GeneratedJsonObject) -> "GeneratedJsonObjectSQL":
-        return cls(
-            id=entity.id,
-            lineage_id=entity.lineage_id,
-            parent_id=entity.parent_id,
-            name=entity.name,
-            object=entity.object,
-            tool_call_id=entity.tool_call_id
-        )
-
 
 ###############################################################################
 # UsageSQL
 ###############################################################################
 
-
 class UsageSQL(SQLModel, table=True):
     """SQL model for Usage"""
-    __table_args__ = {'extend_existing': True}
-
     # Primary key and versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
@@ -190,18 +106,47 @@ class UsageSQL(SQLModel, table=True):
             model=entity.model
         )
 
+###############################################################################
+# GeneratedJsonObjectSQL
+###############################################################################
+
+class GeneratedJsonObjectSQL(SQLModel, table=True):
+    """SQL model for GeneratedJsonObject"""
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    lineage_id: UUID = Field(default_factory=uuid4, index=True)
+    parent_id: Optional[UUID] = Field(default=None, foreign_key="generatedjsonobjectsql.id")
+    name: str
+    object: Dict[str, Any] = Field(sa_column=Column(JSON))
+    tool_call_id: Optional[str] = None
+
+    def to_entity(self) -> GeneratedJsonObject:
+        return GeneratedJsonObject(
+            id=self.id,
+            lineage_id=self.lineage_id,
+            parent_id=self.parent_id,
+            name=self.name,
+            object=self.object,
+            tool_call_id=self.tool_call_id,
+            from_storage=True
+        )
+
+    @classmethod
+    def from_entity(cls, entity: GeneratedJsonObject) -> "GeneratedJsonObjectSQL":
+        return cls(
+            id=entity.id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
+            name=entity.name,
+            object=entity.object,
+            tool_call_id=entity.tool_call_id
+        )
 
 ###############################################################################
 # ChatMessageSQL
 ###############################################################################
 
-
 class ChatMessageSQL(SQLModel, table=True):
-    """
-    SQL model for a single ChatMessage entity version.
-    """
-    __table_args__ = {'extend_existing': True}
-
+    """SQL model for a single ChatMessage entity version."""
     # Primary key and versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
@@ -282,21 +227,12 @@ class ChatMessageSQL(SQLModel, table=True):
             usage=UsageSQL.from_entity(entity.usage) if entity.usage else None
         )
 
-
 ###############################################################################
 # ToolSQL (Unifying CallableTool & StructuredTool)
 ###############################################################################
 
-
-class ToolTypeEnum(str, Enum):
-    callable = "callable"
-    structured = "structured"
-
-
 class ToolSQL(SQLModel, table=True):
     """SQL model for Tool entity"""
-    __table_args__ = {'extend_existing': True}
-
     # Primary key and versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
@@ -376,19 +312,12 @@ class ToolSQL(SQLModel, table=True):
                 output_schema={}
             )
 
-
 ###############################################################################
 # SystemPromptSQL
 ###############################################################################
 
-
 class SystemPromptSQL(SQLModel, table=True):
-    """
-    For the SystemPrompt entity. Possibly many threads can reference
-    the same system prompt version, or treat it as 1-to-1.
-    """
-    __table_args__ = {'extend_existing': True}
-
+    """SQL model for the SystemPrompt entity."""
     # Versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
@@ -418,18 +347,12 @@ class SystemPromptSQL(SQLModel, table=True):
             content=entity.content
         )
 
-
 ###############################################################################
 # LLMConfigSQL
 ###############################################################################
 
-
 class LLMConfigSQL(SQLModel, table=True):
-    """
-    For the LLMConfig entity. Some chat threads reference a single config.
-    """
-    __table_args__ = {'extend_existing': True}
-
+    """SQL model for the LLMConfig entity."""
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="llmconfigsql.id")
@@ -440,6 +363,8 @@ class LLMConfigSQL(SQLModel, table=True):
     temperature: float = 0
     response_format: str = Field(sa_column=Column(SQLAlchemyString))  # Store enum as string
     use_cache: bool = True
+    reasoner: bool = False
+    reasoning_effort: Literal["low", "medium", "high"] = "medium"  # Add proper typing
 
     # Relationships
     threads: List["ChatThreadSQL"] = Relationship(back_populates="llm_config")
@@ -456,6 +381,8 @@ class LLMConfigSQL(SQLModel, table=True):
             temperature=self.temperature,
             response_format=ResponseFormat(self.response_format),  # Convert string to enum
             use_cache=self.use_cache,
+            reasoner=self.reasoner,
+            reasoning_effort=cast(Literal["low", "medium", "high"], self.reasoning_effort),  # Cast to proper type
             from_storage=True
         )
 
@@ -471,25 +398,24 @@ class LLMConfigSQL(SQLModel, table=True):
             max_tokens=entity.max_tokens,
             temperature=entity.temperature,
             response_format=entity.response_format.value,  # Store enum value as string
-            use_cache=entity.use_cache
+            use_cache=entity.use_cache,
+            reasoner=entity.reasoner,
+            reasoning_effort=entity.reasoning_effort
         )
-
 
 ###############################################################################
 # RawOutputSQL
 ###############################################################################
 
-
 class RawOutputSQL(SQLModel, table=True):
     """SQL model for RawOutput"""
-    __table_args__ = {'extend_existing': True}
-
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="rawoutputsql.id")
     raw_result: Dict[str, Any] = Field(sa_column=Column(JSON))
     completion_kwargs: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     chat_thread_id: Optional[UUID] = Field(default=None, foreign_key="chatthreadsql.id")
+    chat_thread_live_id: Optional[UUID] = None
     start_time: float
     end_time: float
     client: str = Field(sa_column=Column(SQLAlchemyString))
@@ -502,6 +428,7 @@ class RawOutputSQL(SQLModel, table=True):
             raw_result=self.raw_result,
             completion_kwargs=self.completion_kwargs,
             chat_thread_id=self.chat_thread_id,
+            chat_thread_live_id=self.chat_thread_live_id,
             start_time=self.start_time,
             end_time=self.end_time,
             client=LLMClient(self.client),
@@ -517,23 +444,18 @@ class RawOutputSQL(SQLModel, table=True):
             raw_result=entity.raw_result,
             completion_kwargs=entity.completion_kwargs or {},
             chat_thread_id=entity.chat_thread_id,
+            chat_thread_live_id=entity.chat_thread_live_id,
             start_time=entity.start_time,
             end_time=entity.end_time,
             client=entity.client.value
         )
 
-
 ###############################################################################
 # ProcessedOutputSQL
 ###############################################################################
 
-
 class ProcessedOutputSQL(SQLModel, table=True):
-    """
-    For the ProcessedOutput entity, referencing a RawOutput, usage, etc.
-    """
-    __table_args__ = {'extend_existing': True}
-
+    """SQL model for the ProcessedOutput entity."""
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
     parent_id: Optional[UUID] = Field(default=None, foreign_key="processedoutputsql.id")
@@ -549,12 +471,15 @@ class ProcessedOutputSQL(SQLModel, table=True):
     raw_output_id: Optional[UUID] = Field(default=None, foreign_key="rawoutputsql.id")
     raw_output: Optional[RawOutputSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
 
-    # ChatThread ID
+    # ChatThread IDs
     chat_thread_id: UUID
     chat_thread_live_id: UUID
 
-    # Relationship
-    json_object: Optional[GeneratedJsonObjectSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
+    # Relationships
+    json_object: Optional[GeneratedJsonObjectSQL] = Relationship(
+        link_model=OutputJsonObjectLinkageSQL,
+        sa_relationship_kwargs={"lazy": "joined"}
+    )
     usage: Optional[UsageSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
 
     def to_entity(self) -> ProcessedOutput:
@@ -595,18 +520,12 @@ class ProcessedOutputSQL(SQLModel, table=True):
             raw_output_id=ent.raw_output.id if ent.raw_output else None
         )
 
-
 ###############################################################################
 # ChatThreadSQL
 ###############################################################################
 
-
 class ChatThreadSQL(SQLModel, table=True):
-    """
-    For the ChatThread entity. Uses many-to-many linking with messages and tools.
-    """
-    __table_args__ = {'extend_existing': True}
-
+    """SQL model for the ChatThread entity."""
     # Versioning
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     lineage_id: UUID = Field(default_factory=uuid4, index=True)
@@ -628,12 +547,16 @@ class ChatThreadSQL(SQLModel, table=True):
 
     # Relationship to LLMConfig
     llm_config_id: Optional[UUID] = Field(default=None, foreign_key="llmconfigsql.id")
-    llm_config: Optional[LLMConfigSQL] = Relationship(sa_relationship_kwargs={"lazy": "joined"})
+    llm_config: Optional[LLMConfigSQL] = Relationship(
+        back_populates="threads", 
+        sa_relationship_kwargs={"lazy": "joined"}
+    )
 
     # Relationship to messages (M-to-M)
     messages: List[ChatMessageSQL] = Relationship(
         back_populates="threads",
-        link_model=ThreadMessageLinkSQL
+        link_model=ThreadMessageLinkSQL,
+        sa_relationship_kwargs={"order_by": "ChatMessageSQL.timestamp"}
     )
 
     # Relationship to tools (M-to-M)
@@ -642,30 +565,20 @@ class ChatThreadSQL(SQLModel, table=True):
         link_model=ThreadToolLinkSQL
     )
 
-    # Possibly forced_output ID
+    # Possibly forced_output ID (structured output in old system)
     forced_output_id: Optional[UUID] = Field(default=None, foreign_key="toolsql.id")
     forced_output: Optional[ToolSQL] = Relationship(
-        sa_relationship_kwargs={"lazy": "joined"},
-        back_populates=None
+        sa_relationship_kwargs={"lazy": "joined"}
     )
 
-    ###########################################################################
-    # Mappers
-    ###########################################################################
     def to_entity(self) -> ChatThread:
-        """
-        Convert ChatThreadSQL -> ChatThread domain entity.
-        We also build the list of ChatMessage entities from self.messages,
-        the system_prompt, the tools, etc.
-        """
+        """Convert to domain entity"""
         message_entities = [m.to_entity() for m in self.messages]
         forced_output_entity = self.forced_output.to_entity() if self.forced_output else None
         system_prompt_entity = self.system_prompt.to_entity() if self.system_prompt else None
-
         if not self.llm_config:
-            raise ValueError("ChatThread requires an LLMConfig to be present in DB.")
-        llm_config_ent = self.llm_config.to_entity()
-
+            raise ValueError("ChatThread requires a LLMConfig to be present in DB.")
+        llm_config_ent = self.llm_config.to_entity() 
         tool_entities = [t.to_entity() for t in self.tools]
 
         return ChatThread(
@@ -689,11 +602,7 @@ class ChatThreadSQL(SQLModel, table=True):
 
     @classmethod
     def from_entity(cls, ent: ChatThread) -> "ChatThreadSQL":
-        """
-        Convert ChatThread entity -> ChatThreadSQL row.
-        We'll NOT automatically add messages or tools here; 
-        that typically belongs in a storage manager that merges them individually.
-        """
+        """Create from domain entity"""
         return cls(
             id=ent.id,
             lineage_id=ent.lineage_id,
@@ -709,83 +618,3 @@ class ChatThreadSQL(SQLModel, table=True):
             llm_config_id=ent.llm_config.id if ent.llm_config else None,
             forced_output_id=ent.forced_output.id if ent.forced_output else None
         )
-
-
-###############################################################################
-# Example: Storage Helper (Optional)
-###############################################################################
-
-class SqlEntityStorageHelper:
-    """
-    Example helper class that shows how you might insert or retrieve 
-    a ChatThread from the DB using the from_entity()/to_entity() approach.
-    """
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def save_thread(self, thread_ent: ChatThread) -> None:
-        """
-        Insert a new version of ChatThread + related messages/tools/etc.
-        If messages or tools exist in DB, we reuse them; otherwise, we create new rows.
-        """
-        # 1) Convert to ChatThreadSQL
-        thread_sql = ChatThreadSQL.from_entity(thread_ent)
-
-        # 2) Upsert system_prompt, llm_config, forced_output, etc.
-        if thread_ent.system_prompt:
-            sp_sql = SystemPromptSQL.from_entity(thread_ent.system_prompt)
-            self.session.merge(sp_sql)  # or add if new
-
-        if thread_ent.llm_config:
-            config_sql = LLMConfigSQL.from_entity(thread_ent.llm_config)
-            self.session.merge(config_sql)
-
-        if thread_ent.forced_output:
-            forced_sql = ToolSQL.from_entity(thread_ent.forced_output)
-            self.session.merge(forced_sql)
-
-        # 3) For each message in thread_ent.history, upsert
-        message_sql_list: List[ChatMessageSQL] = []
-        for msg_ent in thread_ent.history:
-            msg_sql = ChatMessageSQL.from_entity(msg_ent)
-            self.session.merge(msg_sql)
-            message_sql_list.append(msg_sql)
-
-        # 4) For each tool in thread_ent.tools, upsert
-        tool_sql_list: List[ToolSQL] = []
-        for tool_ent in thread_ent.tools:
-            tool_sql = ToolSQL.from_entity(tool_ent)
-            self.session.merge(tool_sql)
-            tool_sql_list.append(tool_sql)
-
-        # 5) Merge the ChatThreadSQL row itself
-        self.session.merge(thread_sql)
-        self.session.commit()
-
-        # 6) Now that we have IDs, attach message -> thread bridging
-        thread_sql_db = self.session.get(ChatThreadSQL, thread_sql.id)
-        if not thread_sql_db:
-            raise ValueError(f"Failed to retrieve ChatThreadSQL after merge (ID={thread_sql.id})")
-
-        # Attach messages
-        for msg_sql in message_sql_list:
-            if msg_sql not in thread_sql_db.messages:
-                thread_sql_db.messages.append(msg_sql)
-
-        # Attach tools
-        for tool_sql in tool_sql_list:
-            if tool_sql not in thread_sql_db.tools:
-                thread_sql_db.tools.append(tool_sql)
-
-        self.session.add(thread_sql_db)
-        self.session.commit()
-
-    def load_thread(self, thread_id: UUID) -> ChatThread:
-        """
-        Load a ChatThread entity from DB by its version ID (UUID).
-        """
-        thread_sql = self.session.get(ChatThreadSQL, thread_id)
-        if not thread_sql:
-            raise ValueError(f"No ChatThreadSQL found with ID={thread_id}")
-        return thread_sql.to_entity()

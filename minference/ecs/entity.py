@@ -1,5 +1,5 @@
 ############################################################
-# entity.py
+# entity.py (refactored)
 ############################################################
 
 import json
@@ -7,7 +7,7 @@ import inspect
 import logging
 from typing import (
     Any, Dict, Optional, Type, TypeVar, List, Protocol, runtime_checkable,
-    Union, Callable, get_args, cast, Self
+    Union, Callable, get_args, cast, Self, Set, Tuple, Generic, get_origin
 )
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -29,9 +29,101 @@ class BaseRegistry:
     def get_registry_status(cls) -> Dict[str, Any]:
         return {"base_registry": True}
 
+##############################
+# 2) Type Definitions
+##############################
+
+# Define type variables
+T = TypeVar('T')
+E = TypeVar('E', bound='Entity')
+SQMT = TypeVar('SQMT', bound='SQLModelType')
+
+# Type for SQL model classes that implement to_entity/from_entity
+class SQLModelType(Protocol):
+    @classmethod
+    def from_entity(cls, entity: 'Entity') -> 'SQLModelType': ...
+    def to_entity(self) -> 'Entity': ...
+    id: UUID
+    lineage_id: UUID
 
 ##############################
-# 2) The Entity + Diff
+# 3) Core comparison and storage utilities
+##############################
+
+def compare_entity_fields(
+    entity1: Any, 
+    entity2: Any, 
+    exclude_fields: Optional[Set[str]] = None
+) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+    """
+    Unified comparison method for entity fields.
+    
+    Returns:
+        Tuple of (has_modifications, field_diffs_dict)
+    """
+    if exclude_fields is None:
+        exclude_fields = {'id', 'created_at', 'parent_id', 'live_id', 'old_ids', 'lineage_id', 'from_storage'}
+    
+    # Get field sets for both entities
+    entity1_fields = set(entity1.model_fields.keys()) - exclude_fields
+    entity2_fields = set(entity2.model_fields.keys()) - exclude_fields
+    
+    # Quick check for field set differences
+    if entity1_fields != entity2_fields:
+        return True, {f: {"type": "schema_change"} for f in entity1_fields.symmetric_difference(entity2_fields)}
+    
+    # Detailed field comparison
+    field_diffs = {}
+    has_diffs = False
+    
+    # Check fields in first entity
+    for field in entity1_fields:
+        value1 = getattr(entity1, field)
+        value2 = getattr(entity2, field)
+        
+        if value1 != value2:
+            has_diffs = True
+            field_diffs[field] = {
+                "type": "modified",
+                "old": value2,
+                "new": value1
+            }
+    
+    return has_diffs, field_diffs
+
+def create_cold_snapshot(entity: 'Entity') -> 'Entity':
+    """
+    Create a cold snapshot of an entity for storage.
+    Ensures proper deep copying and field preservation.
+    """
+    # Create deep copy first
+    snapshot = deepcopy(entity)
+    
+    # Ensure from_storage flag is unset
+    snapshot.from_storage = False
+    
+    # Return the snapshot
+    return snapshot
+
+def get_nested_entities(entity: 'Entity') -> Dict[str, List['Entity']]:
+    """
+    Get all nested entities within an entity.
+    Returns a dictionary mapping field names to lists of entities.
+    """
+    nested: Dict[str, List['Entity']] = {}
+    
+    for field_name, field_value in entity.model_dump().items():
+        if isinstance(field_value, Entity):
+            nested[field_name] = [field_value]
+        elif isinstance(field_value, list):
+            entities = [item for item in field_value if isinstance(item, Entity)]
+            if entities:
+                nested[field_name] = entities
+    
+    return nested
+
+##############################
+# 4) The Entity + Diff
 ##############################
 
 @runtime_checkable
@@ -50,15 +142,18 @@ class EntityDiff:
             "old": old_value,
             "new": new_value
         }
+        
+    @classmethod
+    def from_diff_dict(cls, diff_dict: Dict[str, Dict[str, Any]]) -> 'EntityDiff':
+        """Create an EntityDiff from a difference dictionary."""
+        diff = cls()
+        diff.field_diffs = diff_dict
+        return diff
 
 class Entity(BaseModel):
     """
     Base class for registry-integrated, serializable entities.
-    Subclasses are responsible for custom serialization logic,
-    possibly nested relationships, etc.
-    Snapshots + re-registration => auto-versioning if fields change in place.
-
-    NOTE: This is the original definition from your code, unchanged.
+    Supports versioning, nested entity tracking, and registry integration.
     """
     id: UUID = Field(default_factory=uuid4, description="Unique identifier")
     live_id: UUID = Field(default_factory=uuid4, description="Live/warm identifier")
@@ -66,86 +161,161 @@ class Entity(BaseModel):
     parent_id: Optional[UUID] = None
     lineage_id: UUID = Field(default_factory=uuid4)
     old_ids: List[UUID] = Field(default_factory=list)
-    from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage when loaded from storage as acold object we do not re-register the entity")
-    class Config:
-        json_encoders = {
+    from_storage: bool = Field(default=False, description="Whether the entity was loaded from storage")
+    
+    model_config = {
+        "json_encoders": {
             UUID: str,
             datetime: lambda dt: dt.isoformat()
         }
+    }
 
     def register_entity(self: "Entity") -> "Entity":
+        """Register this entity with the registry."""
+        from __main__ import EntityRegistry
+        
+        # Register nested entities first (bottom-up approach)
+        self._register_nested_entities()
+        
+        # Check if entity exists and if it has changes
         if not EntityRegistry.has_entity(self.id):
             EntityRegistry.register(self)
         elif not self.from_storage:
             cold = EntityRegistry.get_cold_snapshot(self.id)
             if cold and self.has_modifications(cold):
                 self.fork()
+                
         return self
+
+    def _register_nested_entities(self) -> None:
+        """Register all nested entities first to ensure bottom-up processing."""
+        from __main__ import EntityRegistry
+        
+        # Get all nested entities
+        nested_entities = get_nested_entities(self)
+        
+        # Register each entity
+        for field_name, entities in nested_entities.items():
+            for entity in entities:
+                if isinstance(entity, Entity):
+                    # Check if entity has changes and fork if needed
+                    if not EntityRegistry.has_entity(entity.id):
+                        entity.register_entity()
+                    else:
+                        cold = EntityRegistry.get_cold_snapshot(entity.id)
+                        if not entity.from_storage and cold and entity.has_modifications(cold):
+                            # Fork returns the new entity
+                            new_entity = entity.fork()
+                            
+                            # Update the reference in the parent
+                            if isinstance(getattr(self, field_name), list):
+                                # For list fields, find and replace the entity
+                                entity_list = getattr(self, field_name)
+                                for i, e in enumerate(entity_list):
+                                    if isinstance(e, Entity) and e.id == entity.id:
+                                        entity_list[i] = new_entity
+                            else:
+                                # For single reference fields
+                                setattr(self, field_name, new_entity)
 
     @model_validator(mode='after')
     def _auto_register(self) -> Self:
-        entity = self.register_entity()
+        """Automatically register the entity when validated."""
+        if not self.from_storage:  # Only auto-register if not from storage
+            entity = self.register_entity()
         return self
 
     def fork(self, force: bool = False, **kwargs: Any) -> "Entity":
+        """
+        Create a new version of this entity with a new ID.
+        
+        Args:
+            force: Force forking even if no changes detected
+            **kwargs: Fields to modify in the new fork
+            
+        Returns:
+            The new forked entity
+        """
         from __main__ import EntityRegistry
+        
+        # Fork nested entities first (bottom-up approach)
+        nested_changes = self._fork_nested_entities()
+        
+        # Get cold snapshot
         cold = EntityRegistry.get_cold_snapshot(self.id)
         if cold is None:
             EntityRegistry.register(self)
             return self
 
-        changed = False
+        # Check for direct field changes
+        changed = bool(kwargs)
         if kwargs:
-            changed = True
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
-        if not force and not changed and not self.has_modifications(cold):
+        # Determine if forking is needed
+        needs_fork = (
+            force or 
+            changed or 
+            nested_changes or 
+            (cold and self.has_modifications(cold))
+        )
+        
+        if not needs_fork:
             return self
 
+        # Create new entity version
         old_id = self.id
         self.id = uuid4()
         self.parent_id = old_id
         self.old_ids.append(old_id)
+        
+        # Register new version
         EntityRegistry.register(self)
         return self
 
-    def has_modifications(self, other: "Entity") -> bool:
+    def _fork_nested_entities(self) -> bool:
+        """
+        Fork all nested entities that have modifications.
+        Returns True if any nested entities were forked.
+        """
         from __main__ import EntityRegistry
-        EntityRegistry._logger.debug(f"Checking modifications between {self.id} and {other.id}")
+        
+        any_changes = False
+        nested_entities = get_nested_entities(self)
+        
+        for field_name, entities in nested_entities.items():
+            for i, entity in enumerate(entities):
+                if isinstance(entity, Entity):
+                    # Check if entity has changes
+                    cold = EntityRegistry.get_cold_snapshot(entity.id)
+                    if cold and entity.has_modifications(cold):
+                        # Fork and update reference
+                        new_entity = entity.fork()
+                        any_changes = True
+                        
+                        # Update the reference in the parent
+                        if isinstance(getattr(self, field_name), list):
+                            # For list fields, find and replace the entity
+                            entity_list = getattr(self, field_name)
+                            for j, e in enumerate(entity_list):
+                                if isinstance(e, Entity) and e.id == entity.id:
+                                    entity_list[j] = new_entity
+                        else:
+                            # For single reference fields
+                            setattr(self, field_name, new_entity)
+        
+        return any_changes
 
-        exclude = {'id', 'created_at', 'parent_id', 'live_id', 'old_ids', 'lineage_id'}
-        self_fields = set(self.model_fields.keys()) - exclude
-        other_fields = set(other.model_fields.keys()) - exclude
-        if self_fields != other_fields:
-            return True
-
-        for f in self_fields:
-            val_self = getattr(self, f)
-            val_other = getattr(other, f)
-            if val_self != val_other:
-                return True
-        return False
+    def has_modifications(self, other: "Entity") -> bool:
+        """Check if this entity differs from another entity."""
+        has_diffs, _ = compare_entity_fields(self, other)
+        return has_diffs
 
     def compute_diff(self, other: "Entity") -> EntityDiff:
-        from __main__ import EntityRegistry
-        EntityRegistry._logger.debug(f"Computing diff: {self.id} vs {other.id}")
-        diff = EntityDiff()
-        exclude = {'id','created_at','parent_id','live_id','old_ids','lineage_id'}
-        sfields = set(self.model_fields.keys()) - exclude
-        ofields = set(other.model_fields.keys()) - exclude
-
-        for f in sfields - ofields:
-            diff.add_diff(f, "added", new_value=getattr(self, f))
-        for f in ofields - sfields:
-            diff.add_diff(f, "removed", old_value=getattr(other, f))
-
-        for f in sfields & ofields:
-            sv = getattr(self, f)
-            ov = getattr(other, f)
-            if sv != ov:
-                diff.add_diff(f, "modified", old_value=ov, new_value=sv)
-        return diff
+        """Compute detailed differences between this entity and another entity."""
+        _, field_diffs = compare_entity_fields(self, other)
+        return EntityDiff.from_diff_dict(field_diffs)
 
     def entity_dump(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         """
@@ -171,35 +341,27 @@ class Entity(BaseModel):
 
     @classmethod
     def get(cls: Type["Entity"], entity_id: UUID) -> Optional["Entity"]:
+        """Get an entity from the registry by ID."""
         from __main__ import EntityRegistry
         ent = EntityRegistry.get(entity_id, expected_type=cls)
         return cast(Optional["Entity"], ent)
 
     @classmethod
     def list_all(cls: Type["Entity"]) -> List["Entity"]:
+        """List all entities of this type."""
         from __main__ import EntityRegistry
         return EntityRegistry.list_by_type(cls)
 
     @classmethod
     def get_many(cls: Type["Entity"], ids: List[UUID]) -> List["Entity"]:
+        """Get multiple entities by ID."""
         from __main__ import EntityRegistry
         return EntityRegistry.get_many(ids, expected_type=cls)
 
-    @classmethod
-    def compare_entities(cls, e1: "Entity", snapshot: Dict[str, Any]) -> bool:
-        data1 = e1.entity_dump()
-        for k in ['id','created_at','parent_id','live_id','old_ids','lineage_id']:
-            data1.pop(k, None)
-        keys = set(data1.keys()) | set(snapshot.keys())
-        for k in keys:
-            if data1.get(k) != snapshot.get(k):
-                return False
-        return True
-
-
 ##############################
-# 3) EntityStorage Protocol
+# 5) Storage Protocol
 ##############################
+
 class EntityStorage(Protocol):
     """
     Generic interface for storing and retrieving Entities, building lineage, etc.
@@ -214,19 +376,14 @@ class EntityStorage(Protocol):
     def set_inference_orchestrator(self, orchestrator: object) -> None: ...
     def get_inference_orchestrator(self) -> Optional[object]: ...
     def clear(self) -> None: ...
-    # New method to unify lineage logic externally
     def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]: ...
     def has_lineage_id(self, lineage_id: UUID) -> bool: ...
     def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]: ...
 
 
-##############################
-# 4) InMemoryEntityStorage
-##############################
 class InMemoryEntityStorage(EntityStorage):
     """
-    Refined in-memory storage with a _entity_class_map if desired. 
-    (It's somewhat redundant in memory, because we already store the entire object.)
+    Improved in-memory storage with optimized operations.
     """
     def __init__(self) -> None:
         self._logger = logging.getLogger("InMemoryEntityStorage")
@@ -236,37 +393,50 @@ class InMemoryEntityStorage(EntityStorage):
         self._inference_orchestrator: Optional[object] = None
 
     def has_entity(self, entity_id: UUID) -> bool:
+        """Check if entity exists in storage."""
         return entity_id in self._registry
 
     def get_cold_snapshot(self, entity_id: UUID) -> Optional[Entity]:
+        """Get the cold (stored) version of an entity."""
         return self._registry.get(entity_id)
 
     def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
+        """Register an entity or retrieve it by ID."""
         if isinstance(entity_or_id, UUID):
             return self.get(entity_or_id, None)
 
         e = entity_or_id
         old = self._registry.get(e.id)
+        
         if not old:
             self._store_cold_snapshot(e)
             return e
-
+        
+        # Check for modifications
         if e.has_modifications(old):
             e.fork(force=True)
+            
         return e
 
     def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
+        """Get an entity by ID with optional type checking."""
         ent = self._registry.get(entity_id)
         if not ent:
             return None
+            
         if expected_type and not isinstance(ent, expected_type):
             self._logger.error(f"Type mismatch: got {type(ent).__name__}, expected {expected_type.__name__}")
             return None
+            
+        # Create a warm copy
         warm_copy = deepcopy(ent)
         warm_copy.live_id = uuid4()
+        warm_copy.from_storage = True  # Mark as coming from storage
+        
         return warm_copy
 
     def list_by_type(self, entity_type: Type[Entity]) -> List[Entity]:
+        """List all entities of a specific type."""
         return [
             deepcopy(e)
             for e in self._registry.values()
@@ -274,6 +444,7 @@ class InMemoryEntityStorage(EntityStorage):
         ]
 
     def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]]) -> List[Entity]:
+        """Get multiple entities by ID."""
         out: List[Entity] = []
         for eid in entity_ids:
             g = self.get(eid, expected_type)
@@ -282,6 +453,7 @@ class InMemoryEntityStorage(EntityStorage):
         return out
 
     def get_registry_status(self) -> Dict[str, Any]:
+        """Get status information about the registry."""
         return {
             "in_memory": True,
             "entity_count": len(self._registry),
@@ -289,35 +461,37 @@ class InMemoryEntityStorage(EntityStorage):
         }
 
     def set_inference_orchestrator(self, orchestrator: object) -> None:
+        """Set an inference orchestrator for this storage."""
         self._inference_orchestrator = orchestrator
 
     def get_inference_orchestrator(self) -> Optional[object]:
+        """Get the current inference orchestrator."""
         return self._inference_orchestrator
 
     def clear(self) -> None:
+        """Clear all data from storage."""
         self._registry.clear()
         self._entity_class_map.clear()
         self._lineages.clear()
 
     def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]:
-        """
-        Return all entities in memory that share this lineage_id.
-        """
+        """Get all entities with a specific lineage ID."""
         return [e for e in self._registry.values() if e.lineage_id == lineage_id]
 
     def has_lineage_id(self, lineage_id: UUID) -> bool:
+        """Check if a lineage ID exists."""
         return any(e for e in self._registry.values() if e.lineage_id == lineage_id)
 
     def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]:
+        """Get all entity IDs with a specific lineage ID."""
         return [e.id for e in self._registry.values() if e.lineage_id == lineage_id]
 
-    ############################
-    # Helpers
-    ############################
     def _store_cold_snapshot(self, e: Entity) -> None:
-        snap = deepcopy(e)
+        """Store a cold snapshot of an entity."""
+        snap = create_cold_snapshot(e)
         self._registry[e.id] = snap
 
+        # Update lineage tracking
         if e.lineage_id not in self._lineages:
             self._lineages[e.lineage_id] = []
         if e.id not in self._lineages[e.lineage_id]:
@@ -325,43 +499,37 @@ class InMemoryEntityStorage(EntityStorage):
 
 
 ##############################
-# 5) BaseEntitySQL (fallback)
+# 6) SQL Storage Integration
 ##############################
+
 try:
-    # If you are using sqlmodel/SQLAlchemy, import them. 
-    # We'll place them behind a try so this file can still run if not installed.
-    from sqlmodel import SQLModel, Field, select, Session, Column, JSON
+    from sqlmodel import SQLModel, Field, select, Session, create_engine
+    from sqlalchemy import Column, JSON
+    import importlib
     from datetime import timezone
-
+    
     def dynamic_import(path_str: str) -> Type[Entity]:
-        """
-        Very naive dynamic import, e.g. 'myapp.module.EntitySubclass'.
-        Implementation is up to you. 
-        For example:
-
+        """Import a class dynamically by its dotted path."""
+        try:
             mod_name, cls_name = path_str.rsplit(".", 1)
             mod = importlib.import_module(mod_name)
             return getattr(mod, cls_name)
+        except (ImportError, AttributeError) as e:
+            raise ImportError(f"Failed to import {path_str}: {e}")
 
-        Here, we just raise an error or return the base Entity as a fallback.
-        """
-        raise NotImplementedError("You must define a real dynamic_import function or use your own approach.")
-
-    class BaseEntitySQL(SQLModel, table=True):  # type: ignore
-        """
-        Fallback table for storing *any* Entity if no specialized table is found.
-        """
+    class BaseEntitySQL(SQLModel, table=True):
+        """Fallback table for storing any Entity if no specialized table is found."""
         id: UUID = Field(default_factory=uuid4, primary_key=True)
         lineage_id: UUID = Field(default_factory=uuid4, index=True)
         parent_id: Optional[UUID] = Field(default=None)
         created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        old_ids: List[UUID] = Field(default_factory=list, sa_column=Column(JSON))  # type: ignore
+        old_ids: List[UUID] = Field(default_factory=list, sa_column=Column(JSON))
 
         # The dotted Python path for the real class
         class_name: str = Field(...)
 
         # Non-versioning fields are stored here as JSON
-        data: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # type: ignore
+        data: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
         def to_entity(self) -> Entity:
             cls_obj = dynamic_import(self.class_name)
@@ -378,219 +546,238 @@ try:
             return cls_obj(**combined)
 
         @classmethod
-        def from_entity(cls, ent: Entity) -> 'BaseEntitySQL':  # Use string literal type
+        def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
             versioning_fields = {"id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id"}
-            raw = ent.model_dump()  # pydantic's dictionary
+            raw = entity.model_dump()
             data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
             return cls(
-                id=ent.id,
-                lineage_id=ent.lineage_id,
-                parent_id=ent.parent_id,
-                created_at=ent.created_at,
-                old_ids=ent.old_ids,
-                class_name=f"{ent.__class__.__module__}.{ent.__class__.__qualname__}",
+                id=entity.id,
+                lineage_id=entity.lineage_id,
+                parent_id=entity.parent_id,
+                created_at=entity.created_at,
+                old_ids=entity.old_ids,
+                class_name=f"{entity.__class__.__module__}.{entity.__class__.__qualname__}",
                 data=data_only
             )
+    
+    class SqlEntityStorage(EntityStorage):
+        """
+        Optimized SQL-based storage implementation.
+        Uses SQLModel patterns consistently.
+        """
+        def __init__(
+            self,
+            session_factory: Callable[..., Session],
+            entity_to_orm_map: Dict[Type[Entity], Type[SQLModelType]]
+        ) -> None:
+            self._logger = logging.getLogger("SqlEntityStorage")
+            self._session_factory = session_factory
+            self._entity_to_orm_map = entity_to_orm_map
+            self._inference_orchestrator: Optional[object] = None
+            
+            # If BaseEntitySQL is available, use it as fallback
+            if BaseEntitySQL and Entity not in self._entity_to_orm_map:
+                self._entity_to_orm_map[Entity] = BaseEntitySQL
+            
+            # Cache to avoid repeated lookups
+            self._entity_class_map: Dict[UUID, Type[Entity]] = {}
+        
+        def has_entity(self, entity_id: UUID) -> bool:
+            """Check if an entity exists in storage."""
+            # Check cache first
+            if entity_id in self._entity_class_map:
+                return True
+                
+            # Query database
+            with self._session_factory() as session:
+                for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                    stmt = select(orm_cls).where(orm_cls.id == entity_id)
+                    result = session.exec(stmt).first()
+                    if result is not None:
+                        entity = result.to_entity()
+                        self._entity_class_map[entity_id] = type(entity)
+                        return True
+            return False
+        
+        def get_cold_snapshot(self, entity_id: UUID) -> Optional[Entity]:
+            """Get the stored version of an entity."""
+            # Try with known class first if cached
+            cls_maybe = self._entity_class_map.get(entity_id)
+            
+            with self._session_factory() as session:
+                if cls_maybe:
+                    orm_cls = self._entity_to_orm_map.get(cls_maybe)
+                    if orm_cls:
+                        stmt = select(orm_cls).where(orm_cls.id == entity_id)
+                        result = session.exec(stmt).first()
+                        if result:
+                            return result.to_entity()
+                
+                # Fallback to scanning all tables
+                for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                    stmt = select(orm_cls).where(orm_cls.id == entity_id)
+                    result = session.exec(stmt).first()
+                    if result:
+                        entity = result.to_entity()
+                        self._entity_class_map[entity_id] = type(entity)
+                        return entity
+            return None
+        
+        def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
+            """Register an entity or retrieve it by ID."""
+            if isinstance(entity_or_id, UUID):
+                return self.get(entity_or_id, None)
+                
+            entity = entity_or_id
+            
+            # Check for modifications
+            old = self.get_cold_snapshot(entity.id)
+            if old and entity.has_modifications(old):
+                entity.fork(force=True)
+                return self.register(entity)  # Re-register with new ID
+                
+            # Find appropriate ORM class
+            orm_cls = self._get_orm_class(entity)
+            if not orm_cls:
+                self._logger.error(f"No ORM mapping found for {type(entity)}")
+                return None
+                
+            # Convert to ORM model and save
+            orm_obj = orm_cls.from_entity(entity)
+            with self._session_factory() as session:
+                session.add(orm_obj)
+                session.commit()
+                
+            # Update cache
+            self._entity_class_map[entity.id] = type(entity)
+            return entity
+        
+        def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
+            """Get an entity by ID with optional type checking."""
+            entity = self.get_cold_snapshot(entity_id)
+            if not entity:
+                return None
+                
+            if expected_type and not isinstance(entity, expected_type):
+                self._logger.error(f"Type mismatch: got {type(entity).__name__}, expected {expected_type.__name__}")
+                return None
+                
+            # Create a warm copy
+            warm_copy = deepcopy(entity)
+            warm_copy.live_id = uuid4()
+            warm_copy.from_storage = True
+            
+            return warm_copy
+        
+        def list_by_type(self, entity_type: Type[Entity]) -> List[Entity]:
+            """List all entities of a specific type."""
+            orm_cls = self._entity_to_orm_map.get(entity_type)
+            if not orm_cls:
+                # Try fallback to BaseEntitySQL if entity_type is Entity
+                if entity_type is Entity and Entity in self._entity_to_orm_map:
+                    orm_cls = self._entity_to_orm_map[Entity]
+                else:
+                    return []
+                    
+            entities: List[Entity] = []
+            with self._session_factory() as session:
+                stmt = select(orm_cls)
+                results = session.exec(stmt).all()
+                for result in results:
+                    entity = result.to_entity()
+                    self._entity_class_map[entity.id] = type(entity)
+                    entities.append(entity)
+            return entities
+        
+        def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]]) -> List[Entity]:
+            """Get multiple entities by ID."""
+            results: List[Entity] = []
+            for entity_id in entity_ids:
+                entity = self.get(entity_id, expected_type)
+                if entity:
+                    results.append(entity)
+            return results
+        
+        def get_registry_status(self) -> Dict[str, Any]:
+            """Get status information about the registry."""
+            return {
+                "storage": "sql",
+                "known_ids_in_cache": len(self._entity_class_map)
+            }
+        
+        def set_inference_orchestrator(self, orchestrator: object) -> None:
+            """Set an inference orchestrator."""
+            self._inference_orchestrator = orchestrator
+        
+        def get_inference_orchestrator(self) -> Optional[object]:
+            """Get the current inference orchestrator."""
+            return self._inference_orchestrator
+        
+        def clear(self) -> None:
+            """Clear cached data (doesn't affect database)."""
+            self._entity_class_map.clear()
+            self._logger.warning("SqlEntityStorage.clear() only clears caches, not database data")
+        
+        def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]:
+            """Get all entities with a specific lineage ID."""
+            entities: List[Entity] = []
+            with self._session_factory() as session:
+                for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                    stmt = select(orm_cls).where(orm_cls.lineage_id == lineage_id)
+                    results = session.exec(stmt).all()
+                    for result in results:
+                        entity = result.to_entity()
+                        self._entity_class_map[entity.id] = type(entity)
+                        entities.append(entity)
+            return entities
+        
+        def has_lineage_id(self, lineage_id: UUID) -> bool:
+            """Check if a lineage ID exists."""
+            entities = self.get_lineage_entities(lineage_id)
+            return len(entities) > 0
+        
+        def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]:
+            """Get all entity IDs with a specific lineage ID."""
+            return [entity.id for entity in self.get_lineage_entities(lineage_id)]
+        
+        def _get_orm_class(self, entity: Entity) -> Optional[Type[SQLModelType]]:
+            """Get the appropriate ORM class for an entity."""
+            # Try exact class match
+            orm_cls = self._entity_to_orm_map.get(type(entity))
+            if orm_cls:
+                return orm_cls
+                
+            # Try parent classes
+            for entity_cls, orm_cls in self._entity_to_orm_map.items():
+                if isinstance(entity, entity_cls):
+                    return orm_cls
+                    
+            return None
 
 except ImportError:
-    # No SQLModel installed, so we skip this fallback definition
+    # SQLModel not available, skip SQL storage implementation
     BaseEntitySQL = None  # type: ignore
-    SQLModel = None  # type: ignore
-    Column = None  # type: ignore
-    JSON = None  # type: ignore
-    Session = None  # type: ignore
-    select = None  # type: ignore
+    SqlEntityStorage = None  # type: ignore
 
 
 ##############################
-# 6) SqlEntityStorage
+# 7) Registry Facade
 ##############################
-class SqlEntityStorage(EntityStorage):
-    """
-    Revised SQL-based storage with a fallback BaseEntitySQL table
-    and a dictionary that maps UUID -> Python class to avoid scanning.
-    """
-    def __init__(
-        self,
-        session_factory: Callable[..., Any],
-        entity_to_orm_map: Dict[Type[Entity], Type[Any]]
-    ) -> None:
-        self._logger = logging.getLogger("SqlEntityStorage")
-        self._session_factory = session_factory
-        self._entity_to_orm_map = entity_to_orm_map
-        self._inference_orchestrator: Optional[object] = None
 
-        # If using the fallback BaseEntitySQL, ensure Entity->BaseEntitySQL is in the map
-        if BaseEntitySQL and (Entity not in self._entity_to_orm_map):
-            self._entity_to_orm_map[Entity] = BaseEntitySQL
-
-        # Keep a local dictionary: entity_id -> actual Python class
-        self._entity_class_map: Dict[UUID, Type[Entity]] = {}
-
-    def has_entity(self, entity_id: UUID) -> bool:
-        if entity_id in self._entity_class_map:
-            return True
-
-        with self._session_factory() as sess:
-            for ormcls in self._entity_to_orm_map.values():
-                row = sess.get(ormcls, entity_id)
-                if row is not None:
-                    ent = row.to_entity()
-                    self._entity_class_map[entity_id] = type(ent)
-                    return True
-        return False
-
-    def get_cold_snapshot(self, entity_id: UUID) -> Optional[Entity]:
-        cls_maybe = self._entity_class_map.get(entity_id)
-
-        with self._session_factory() as sess:
-            if cls_maybe and cls_maybe in self._entity_to_orm_map:
-                row = sess.get(self._entity_to_orm_map[cls_maybe], entity_id)
-                if row is not None:
-                    return row.to_entity()
-                return None
-            # fallback scan if we don't know the class
-            for ormcls in self._entity_to_orm_map.values():
-                row = sess.get(ormcls, entity_id)
-                if row is not None:
-                    ent = row.to_entity()
-                    self._entity_class_map[entity_id] = type(ent)
-                    return ent
-        return None
-
-    def register(self, entity_or_id: Union[Entity, UUID]) -> Optional[Entity]:
-        if isinstance(entity_or_id, UUID):
-            return self.get(entity_or_id, None)
-
-        ent = entity_or_id
-        old = self.get_cold_snapshot(ent.id)
-        if old and ent.has_modifications(old):
-            ent.fork(force=True)
-            return self.register(ent)  # re-register with the new ID
-
-        ormcls = self._resolve_orm_cls(ent)
-        if ormcls is None:
-            self._logger.error(f"No ORM mapping found for {type(ent)}. Possibly add {type(ent)} -> BaseEntitySQL?")
-            return None
-
-        row = ormcls.from_entity(ent)
-        with self._session_factory() as sess:
-            sess.merge(row)
-            sess.commit()
-
-        self._entity_class_map[ent.id] = type(ent)
-        return ent
-
-    def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]]) -> Optional[Entity]:
-        cold = self.get_cold_snapshot(entity_id)
-        if not cold:
-            return None
-        if expected_type and not isinstance(cold, expected_type):
-            self._logger.error(f"Type mismatch: got {type(cold).__name__}, expected {expected_type.__name__}")
-            return None
-        warm_copy = deepcopy(cold)
-        warm_copy.live_id = uuid4()
-        return warm_copy
-
-    def list_by_type(self, entity_type: Type[Entity]) -> List[Entity]:
-        ormcls = self._entity_to_orm_map.get(entity_type)
-        if not ormcls:
-            # possibly fallback to BaseEntitySQL if entity_type is Entity
-            if entity_type is Entity and BaseEntitySQL:
-                ormcls = BaseEntitySQL
-            else:
-                return []
-
-        out: List[Entity] = []
-        if not (Session and select):
-            self._logger.warning("SQLModel or SQLAlchemy not installed, cannot list_by_type.")
-            return out
-
-        with self._session_factory() as sess:
-            rows = sess.exec(select(ormcls)).all()  # type: ignore
-            for row in rows:
-                ent = row.to_entity()
-                self._entity_class_map[ent.id] = type(ent)
-                out.append(ent)
-        return out
-
-    def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]]) -> List[Entity]:
-        results: List[Entity] = []
-        for eid in entity_ids:
-            got = self.get(eid, expected_type)
-            if got is not None:
-                results.append(got)
-        return results
-
-    def get_registry_status(self) -> Dict[str, Any]:
-        return {
-            "storage": "sql",
-            "known_ids_in_class_map": len(self._entity_class_map)
-        }
-
-    def set_inference_orchestrator(self, orchestrator: object) -> None:
-        self._inference_orchestrator = orchestrator
-
-    def get_inference_orchestrator(self) -> Optional[object]:
-        return self._inference_orchestrator
-
-    def clear(self) -> None:
-        self._entity_class_map.clear()
-        self._logger.warning("SqlEntityStorage.clear() not fully implemented - "
-                             "you must manually truncate tables in the DB.")
-
-    def _resolve_orm_cls(self, ent: Entity) -> Optional[Type[Any]]:
-        # exact match
-        cls_mapped = self._entity_to_orm_map.get(ent.__class__)
-        if cls_mapped:
-            return cls_mapped
-        # fallback
-        if Entity in self._entity_to_orm_map:
-            return self._entity_to_orm_map[Entity]  # e.g. BaseEntitySQL
-        return None
-
-    ############################
-    # Unified lineage approach
-    ############################
-    def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]:
-        if not (Session and select):
-            self._logger.warning("SQLModel not installed, cannot get lineage entities.")
-            return []
-        out: List[Entity] = []
-        with self._session_factory() as sess:
-            for ormcls in self._entity_to_orm_map.values():
-                stmt = select(ormcls).where(ormcls.lineage_id == lineage_id)
-                rows = sess.exec(stmt).all()  # type: ignore
-                for row in rows:
-                    ent = row.to_entity()
-                    self._entity_class_map[ent.id] = type(ent)
-                    out.append(ent)
-        return out
-
-    def has_lineage_id(self, lineage_id: UUID) -> bool:
-        ents = self.get_lineage_entities(lineage_id)
-        return len(ents) > 0
-
-    def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]:
-        return [x.id for x in self.get_lineage_entities(lineage_id)]
-
-
-##############################
-# 7) EntityRegistry (Facade)
-##############################
 class EntityRegistry(BaseRegistry):
     """
-    A static registry class delegating to _storage for read/write ops.
-    Unifies lineage building in a single place.
+    Improved static registry class with unified lineage handling.
     """
     _logger = logging.getLogger("EntityRegistry")
     _storage: EntityStorage = InMemoryEntityStorage()  # default
 
     @classmethod
     def use_storage(cls, storage: EntityStorage) -> None:
+        """Set the storage implementation to use."""
         cls._storage = storage
-        cls._logger.info(f"EntityRegistry now uses {type(storage).__name__}")
+        cls._logger.info(f"Now using {type(storage).__name__} for storage")
 
+    # Simple delegation methods
     @classmethod
     def has_entity(cls, entity_id: UUID) -> bool:
         return cls._storage.has_entity(entity_id)
@@ -617,9 +804,10 @@ class EntityRegistry(BaseRegistry):
 
     @classmethod
     def get_registry_status(cls) -> Dict[str, Any]:
+        """Get combined status from base registry and storage."""
         base = super().get_registry_status()
-        store_status = cls._storage.get_registry_status()
-        return {**base, **store_status}
+        store = cls._storage.get_registry_status()
+        return {**base, **store}
 
     @classmethod
     def set_inference_orchestrator(cls, orchestrator: object) -> None:
@@ -633,9 +821,7 @@ class EntityRegistry(BaseRegistry):
     def clear(cls) -> None:
         cls._storage.clear()
 
-    ##############
-    # Unified lineage logic
-    ##############
+    # Lineage methods
     @classmethod
     def has_lineage_id(cls, lineage_id: UUID) -> bool:
         return cls._storage.has_lineage_id(lineage_id)
@@ -643,70 +829,96 @@ class EntityRegistry(BaseRegistry):
     @classmethod
     def get_lineage_ids(cls, lineage_id: UUID) -> List[UUID]:
         return cls._storage.get_lineage_ids(lineage_id)
+        
+    @classmethod
+    def get_lineage_entities(cls, lineage_id: UUID) -> List[Entity]:
+        """Get all entities with a specific lineage ID."""
+        return cls._storage.get_lineage_entities(lineage_id)
 
     @classmethod
     def build_lineage_tree(cls, lineage_id: UUID) -> Dict[UUID, Dict[str, Any]]:
-        """
-        Build a lineage tree from a list of Entities in that lineage.
-        """
-        nodes = cls._storage.get_lineage_entities(lineage_id)
+        """Build a hierarchical tree from lineage entities."""
+        nodes = cls.get_lineage_entities(lineage_id)
         if not nodes:
             return {}
 
+        # Index entities by ID
         by_id = {e.id: e for e in nodes}
-        # find root(s)
-        roots = [x for x in nodes if x.parent_id not in by_id]
+        
+        # Find root entities (those without parents in this lineage)
+        roots = [e for e in nodes if e.parent_id not in by_id]
 
+        # Build tree structure
         tree: Dict[UUID, Dict[str, Any]] = {}
 
-        def build_sub(e: Entity, depth: int=0):
+        def process_entity(entity: Entity, depth: int = 0) -> None:
+            """Process a single entity and its children."""
+            # Calculate differences from parent
             diff_from_parent = None
-            if e.parent_id and e.parent_id in by_id:
-                parent = by_id[e.parent_id]
-                diff = e.compute_diff(parent)
+            if entity.parent_id and entity.parent_id in by_id:
+                parent = by_id[entity.parent_id]
+                diff = entity.compute_diff(parent)
                 diff_from_parent = diff.field_diffs
 
-            tree[e.id] = {
-                "entity": e,
+            # Add to tree
+            tree[entity.id] = {
+                "entity": entity,
                 "children": [],
                 "depth": depth,
-                "parent_id": e.parent_id,
-                "created_at": e.created_at,
-                "data": e.entity_dump(),
+                "parent_id": entity.parent_id,
+                "created_at": entity.created_at,
+                "data": entity.entity_dump(),
                 "diff_from_parent": diff_from_parent
             }
 
-            if e.parent_id and e.parent_id in tree:
-                tree[e.parent_id]["children"].append(e.id)
+            # Link to parent
+            if entity.parent_id and entity.parent_id in tree:
+                tree[entity.parent_id]["children"].append(entity.id)
 
-            # children
-            for child in nodes:
-                if child.parent_id == e.id:
-                    build_sub(child, depth+1)
+            # Process children
+            children = [e for e in nodes if e.parent_id == entity.id]
+            for child in children:
+                process_entity(child, depth + 1)
 
-        for r in roots:
-            build_sub(r, 0)
+        # Process all roots
+        for root in roots:
+            process_entity(root, 0)
+            
         return tree
 
     @classmethod
     def get_lineage_tree_sorted(cls, lineage_id: UUID) -> Dict[str, Any]:
-        tr = cls.build_lineage_tree(lineage_id)
-        if not tr:
-            return {"nodes": {}, "edges": [], "root": None, "sorted_ids": [], "diffs": {}}
-        items_sorted = sorted(tr.items(), key=lambda x: x[1]["created_at"])
-        sorted_ids = [k for k, _ in items_sorted]
+        """Get a lineage tree with entities sorted by creation time."""
+        tree = cls.build_lineage_tree(lineage_id)
+        if not tree:
+            return {
+                "nodes": {},
+                "edges": [],
+                "root": None,
+                "sorted_ids": [],
+                "diffs": {}
+            }
+            
+        # Sort nodes by creation time
+        sorted_items = sorted(tree.items(), key=lambda x: x[1]["created_at"])
+        sorted_ids = [item[0] for item in sorted_items]
+        
+        # Extract edges and diffs
         edges = []
         diffs = {}
-        for vid, node_data in tr.items():
-            p = node_data["parent_id"]
-            if p:
-                edges.append((p, vid))
+        for node_id, node_data in tree.items():
+            parent_id = node_data["parent_id"]
+            if parent_id:
+                edges.append((parent_id, node_id))
                 if node_data["diff_from_parent"]:
-                    diffs[vid] = node_data["diff_from_parent"]
-        root_candidates = [k for k,v in tr.items() if not v["parent_id"]]
+                    diffs[node_id] = node_data["diff_from_parent"]
+                    
+        # Find root node
+        root_candidates = [node_id for node_id, data in tree.items() if not data["parent_id"]]
         root_id = root_candidates[0] if root_candidates else None
+        
         return {
-            "nodes": tr,
+            "nodes": tree,
             "edges": edges,
             "root": root_id,
             "sorted_ids": sorted_ids,
@@ -715,106 +927,178 @@ class EntityRegistry(BaseRegistry):
 
     @classmethod
     def get_lineage_mermaid(cls, lineage_id: UUID) -> str:
+        """Generate a Mermaid diagram for a lineage tree."""
         data = cls.get_lineage_tree_sorted(lineage_id)
         if not data["nodes"]:
             return "```mermaid\ngraph TD\n  No data available\n```"
 
         lines = ["```mermaid", "graph TD"]
 
+        # Helper for formatting values in diagram
         def format_value(val: Any) -> str:
             s = str(val)
             return s[:15] + "..." if len(s) > 15 else s
 
+        # Add nodes to diagram
         for node_id, node_data in data["nodes"].items():
-            ent = node_data["entity"]
-            clsname = type(ent).__name__
-            short = str(node_id)[:8]
+            entity = node_data["entity"]
+            class_name = type(entity).__name__
+            short_id = str(node_id)[:8]
+            
             if not node_data["parent_id"]:
-                # root
-                dd = list(node_data["data"].items())[:3]
-                summary = "\\n".join(f"{k}={format_value(v)}" for k,v in dd)
-                lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n{summary}\"]")
+                # Root node with summary
+                data_items = list(node_data["data"].items())[:3]
+                summary = "\\n".join(f"{k}={format_value(v)}" for k, v in data_items)
+                lines.append(f"  {node_id}[\"{class_name}\\n{short_id}\\n{summary}\"]")
             else:
+                # Child node with change count
                 diff = data["diffs"].get(node_id, {})
-                changes = len(diff)
-                lines.append(f"  {node_id}[\"{clsname}\\n{short}\\n({changes} changes)\"]")
+                change_count = len(diff)
+                lines.append(f"  {node_id}[\"{class_name}\\n{short_id}\\n({change_count} changes)\"]")
 
-        for (p, c) in data["edges"]:
-            diff = data["diffs"].get(c, {})
+        # Add edges to diagram
+        for parent_id, child_id in data["edges"]:
+            diff = data["diffs"].get(child_id, {})
             if diff:
+                # Edge with diff labels
                 label_parts = []
                 for field, info in diff.items():
-                    t = info.get("type")
-                    if t == "modified":
+                    diff_type = info.get("type")
+                    if diff_type == "modified":
                         label_parts.append(f"{field} mod")
-                    elif t == "added":
+                    elif diff_type == "added":
                         label_parts.append(f"+{field}")
-                    elif t == "removed":
+                    elif diff_type == "removed":
                         label_parts.append(f"-{field}")
+                
+                # Truncate if too many changes
                 if len(label_parts) > 3:
-                    label_parts = label_parts[:3] + [f"...({len(diff)-3} more)"]
+                    label_parts = label_parts[:3] + [f"...({len(diff) - 3} more)"]
+                    
                 label = "\\n".join(label_parts)
-                lines.append(f"  {p} -->|\"{label}\"| {c}")
+                lines.append(f"  {parent_id} -->|\"{label}\"| {child_id}")
             else:
-                lines.append(f"  {p} --> {c}")
+                # Simple edge
+                lines.append(f"  {parent_id} --> {child_id}")
 
         lines.append("```")
         return "\n".join(lines)
 
 
 ##############################
-# 8) Decorators for versioning
+# 8) Entity Tracing
 ##############################
-def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
+
+def _find_entities(obj: Any) -> Dict[int, Entity]:
+    """
+    Recursively scan an object for Entity instances.
+    Returns a dictionary mapping object IDs to entities.
+    """
     found: Dict[int, Entity] = {}
-    def scan(obj: Any) -> None:
-        if isinstance(obj, Entity):
-            found[id(obj)] = obj
-        elif isinstance(obj, (list, tuple, set)):
-            for x in obj:
-                scan(x)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                scan(v)
-    for a in args:
-        scan(a)
-    for v in kwargs.values():
-        scan(v)
+    
+    def scan(item: Any) -> None:
+        if isinstance(item, Entity):
+            found[id(item)] = item
+        elif isinstance(item, (list, tuple, set)):
+            for element in item:
+                scan(element)
+        elif isinstance(item, dict):
+            for value in item.values():
+                scan(value)
+    
+    scan(obj)
     return found
 
-def _check_and_fork_modified(entity: Entity) -> None:
+def _check_and_process_entities(entities: Dict[int, Entity], fork_if_modified: bool = True) -> None:
+    """
+    Check entities for modifications and optionally fork them.
+    Process in bottom-up order (nested entities first).
+    """
     from __main__ import EntityRegistry
-    cold = EntityRegistry.get_cold_snapshot(entity.id)
-    if cold and entity.has_modifications(cold):
-        entity.fork()
+    
+    # Build dependency graph
+    dependency_graph: Dict[int, List[int]] = {id(e): [] for e in entities.values()}
+    for entity_id, entity in entities.items():
+        # Find all nested entities
+        nested = get_nested_entities(entity)
+        for field_entities in nested.values():
+            for nested_entity in field_entities:
+                nested_id = id(nested_entity)
+                if nested_id in entities:
+                    # Add dependency: entity depends on nested_entity
+                    dependency_graph[entity_id].append(nested_id)
+    
+    # Topological sort (process leaves first)
+    processed: Set[int] = set()
+    
+    def process_entity(entity_id: int) -> None:
+        if entity_id in processed:
+            return
+            
+        # Process dependencies first
+        for dep_id in dependency_graph[entity_id]:
+            if dep_id not in processed:
+                process_entity(dep_id)
+                
+        # Process this entity
+        entity = entities[entity_id]
+        cold = EntityRegistry.get_cold_snapshot(entity.id)
+        
+        if cold and entity.has_modifications(cold) and fork_if_modified:
+            entity.fork()
+            
+        processed.add(entity_id)
+    
+    # Process all entities
+    for entity_id in entities:
+        if entity_id not in processed:
+            process_entity(entity_id)
+
 
 def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
     """
-    Decorator that checks/forks Entities for modifications before/after the function call.
+    Improved decorator that checks and forks entities before and after function call.
+    Handles async functions and detects entities in a bottom-up order.
     """
     if inspect.iscoroutinefunction(func):
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            ents_before = _collect_entities(args, kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
+            # Find entities before function call
+            entities_before = _find_entities((args, kwargs))
+            
+            # Check and process entities before function call
+            _check_and_process_entities(entities_before)
+            
+            # Call the function
             result = await func(*args, **kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
-            if isinstance(result, Entity) and id(result) in ents_before:
-                return ents_before[id(result)]
+            
+            # Check and process entities after function call
+            _check_and_process_entities(entities_before)
+            
+            # Handle result if it's an entity
+            if isinstance(result, Entity) and id(result) in entities_before:
+                return entities_before[id(result)]
+                
             return result
         return async_wrapper
     else:
         @wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            ents_before = _collect_entities(args, kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
+            # Find entities before function call
+            entities_before = _find_entities((args, kwargs))
+            
+            # Check and process entities before function call
+            _check_and_process_entities(entities_before)
+            
+            # Call the function
             result = func(*args, **kwargs)
-            for e in ents_before.values():
-                _check_and_fork_modified(e)
-            if isinstance(result, Entity) and id(result) in ents_before:
-                return ents_before[id(result)]
+            
+            # Check and process entities after function call
+            _check_and_process_entities(entities_before)
+            
+            # Handle result if it's an entity
+            if isinstance(result, Entity) and id(result) in entities_before:
+                return entities_before[id(result)]
+                
             return result
         return sync_wrapper
