@@ -311,14 +311,14 @@ class CallableTool(Entity):
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the callable with the given input data."""
         ca_registry = CallableRegistry
-        ca_registry._logger.info(f"CallableTool({self.id}): Executing '{self.name}'")
+        ca_registry._logger.info(f"CallableTool({self.ecs_id}): Executing '{self.name}'")
         
         try:
             result = ca_registry.execute(self.name, input_data)
-            ca_registry._logger.info(f"CallableTool({self.id}): Execution successful")
+            ca_registry._logger.info(f"CallableTool({self.ecs_id}): Execution successful")
             return result
         except Exception as e:
-            ca_registry._logger.error(f"CallableTool({self.id}): Execution failed for '{self.name}'")
+            ca_registry._logger.error(f"CallableTool({self.ecs_id}): Execution failed for '{self.name}'")
             raise ValueError(f"Error executing {self.name}: {str(e)}") from e
     
     async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -338,14 +338,14 @@ class CallableTool(Entity):
             ValueError: If execution fails
         """
         ca_registry = CallableRegistry
-        ca_registry._logger.info(f"CallableTool({self.id}): Executing '{self.name}' asynchronously")
+        ca_registry._logger.info(f"CallableTool({self.ecs_id}): Executing '{self.name}' asynchronously")
         
         try:
             result = await ca_registry.aexecute(self.name, input_data)
-            ca_registry._logger.info(f"CallableTool({self.id}): Async execution successful")
+            ca_registry._logger.info(f"CallableTool({self.ecs_id}): Async execution successful")
             return result
         except Exception as e:
-            ca_registry._logger.error(f"CallableTool({self.id}): Async execution failed for '{self.name}'")
+            ca_registry._logger.error(f"CallableTool({self.ecs_id}): Async execution failed for '{self.name}'")
             raise ValueError(f"Error executing {self.name} asynchronously: {str(e)}") from e
     
     def get_openai_tool(self) -> Optional[ChatCompletionToolParam]:
@@ -426,16 +426,16 @@ class StructuredTool(Entity):
 
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute structured output validation."""
-        EntityRegistry._logger.info(f"StructuredTool({self.id}): Validating input for '{self.name}'")
+        EntityRegistry._logger.info(f"StructuredTool({self.ecs_id}): Validating input for '{self.name}'")
         
         try:
             # Validate input against schema
             validate(instance=input_data, schema=self.json_schema)
-            EntityRegistry._logger.info(f"StructuredTool({self.id}): Validation successful")
+            EntityRegistry._logger.info(f"StructuredTool({self.ecs_id}): Validation successful")
             return input_data
             
         except Exception as e:
-            EntityRegistry._logger.error(f"StructuredTool({self.id}): Validation failed - {str(e)}")
+            EntityRegistry._logger.error(f"StructuredTool({self.ecs_id}): Validation failed - {str(e)}")
             return {"error": str(e)}
 
     async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1323,7 +1323,7 @@ class ChatThread(Entity):
     @property
     def oai_messages(self) -> List[Dict[str, Any]]:
         """Convert chat history to OpenAI message format."""
-        EntityRegistry._logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
+        EntityRegistry._logger.info(f"Converting ChatThread({self.ecs_id}) history to OpenAI format")
         messages = []
         
         if self.system_prompt and not self.llm_config.reasoner:
@@ -1374,7 +1374,7 @@ class ChatThread(Entity):
                     "tool_call_id": msg.oai_tool_call_id
                 })
         
-        EntityRegistry._logger.info(f"Final messages for ChatThread({self.id}): {messages}")
+        EntityRegistry._logger.info(f"Final messages for ChatThread({self.ecs_id}): {messages}")
         return messages
 
     @property
@@ -1401,33 +1401,33 @@ class ChatThread(Entity):
     @entity_tracer
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_user_message")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Starting add_user_message")
         
         if not self.new_message and self.llm_config.response_format not in [ResponseFormat.auto_tools, ResponseFormat.workflow]:
-            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add user message - no new message content")
+            EntityRegistry._logger.error(f"ChatThread({self.ecs_id}): Cannot add user message - no new message content")
             raise ValueError("Cannot add user message - no new message content")
         elif not self.new_message:
-            EntityRegistry._logger.info(f"ChatThread({self.id}): Skipping user message - in {self.llm_config.response_format} mode")
+            EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Skipping user message - in {self.llm_config.response_format} mode")
             return None
 
-        parent_id = self.history[-1].id if self.history else None
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating user message with parent_id: {parent_id}")
+        parent_id = self.history[-1].ecs_id if self.history else None
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Creating user message with parent_id: {parent_id}")
 
         user_message = ChatMessage(
             role=MessageRole.user,
             content=self.new_message,
-            chat_thread_id=self.id,
+            chat_thread_id=self.ecs_id,
             parent_message_uuid=parent_id
         )
         
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Created user message({user_message.id})")
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Message content: {self.new_message[:100]}...")
+        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Created user message({user_message.ecs_id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Message content: {self.new_message[:100]}...")
         
         self.history.append(user_message)
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Added user message to history. New history length: {len(self.history)}")
+        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Added user message to history. New history length: {len(self.history)}")
         
         self.new_message = None
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Cleared new_message buffer")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Cleared new_message buffer")
         
         return user_message
     
@@ -1435,32 +1435,32 @@ class ChatThread(Entity):
     def reset_workflow_step(self):
         """Reset the workflow step to 0"""
         self.workflow_step = 0
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Reset workflow step to 0")
+        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Reset workflow step to 0")
 
     @entity_tracer
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Starting add_chat_turn_history with ProcessedOutput({output.ecs_id})")
         
         # Get the parent message
         
         if not self.history:
-            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add chat turn to empty history")
+            EntityRegistry._logger.error(f"ChatThread({self.ecs_id}): Cannot add chat turn to empty history")
             raise ValueError("Cannot add chat turn to empty history")
         
         parent_message = self.history[-1]
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Parent message({parent_message.id}) role: {parent_message.role}")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Parent message({parent_message.ecs_id}) role: {parent_message.role}")
         
         # Create assistant message
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating assistant message")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Creating assistant message")
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
-            chat_thread_id=self.id,
-            parent_message_uuid=parent_message.id,
+            chat_thread_id=self.ecs_id,
+            parent_message_uuid=parent_message.ecs_id,
             tool_call=output.json_object.object if output.json_object else None,
             tool_name=output.json_object.name if output.json_object else None,
-            tool_uuid=self.forced_output.id if self.forced_output else None,
+            tool_uuid=self.forced_output.ecs_id if self.forced_output else None,
             tool_type="Structured" if isinstance(self.forced_output, StructuredTool) else "Callable" if isinstance(self.forced_output, CallableTool) else None,
             oai_tool_call_id=output.json_object.tool_call_id if output.json_object else None,
             tool_json_schema=self.forced_output.json_schema if self.forced_output and isinstance(self.forced_output, StructuredTool) else None,
@@ -1468,70 +1468,70 @@ class ChatThread(Entity):
         )
         
         self.history.append(assistant_message)
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Added assistant message({assistant_message.id})")
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Assistant message details - tool_name: {assistant_message.tool_name}, tool_call_id: {assistant_message.oai_tool_call_id}")
+        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Added assistant message({assistant_message.ecs_id})")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Assistant message details - tool_name: {assistant_message.tool_name}, tool_call_id: {assistant_message.oai_tool_call_id}")
         
         # Handle tool execution/validation
         if output.json_object and assistant_message:
             tool = self.get_tool_by_name(output.json_object.name)
             if tool:
-                EntityRegistry._logger.info(f"ChatThread({self.id}): Processing tool {tool.name} ({type(tool).__name__})")
+                EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Processing tool {tool.name} ({type(tool).__name__})")
                 try:
                     if isinstance(tool, StructuredTool):
-                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Validating structured tool input")
+                        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Validating structured tool input")
                         validation_result = tool.execute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps({"status": "validated", "message": "Schema validation successful"}),
-                            chat_thread_id=self.id,
+                            chat_thread_id=self.ecs_id,
                             tool_name=tool.name,
-                            tool_uuid=tool.id,
+                            tool_uuid=tool.ecs_id,
                             tool_type="Structured",
                             tool_json_schema=tool.json_schema,
-                            parent_message_uuid=assistant_message.id,
+                            parent_message_uuid=assistant_message.ecs_id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        EntityRegistry._logger.info(f"ChatThread({self.id}): Validation successful")
+                        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Validation successful")
                     
                     elif isinstance(tool, CallableTool):
-                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Executing callable tool")
+                        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Executing callable tool")
                         tool_result = await tool.aexecute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
                             content=json.dumps(tool_result),
-                            chat_thread_id=self.id,
+                            chat_thread_id=self.ecs_id,
                             tool_name=tool.name,
-                            tool_uuid=tool.id,
+                            tool_uuid=tool.ecs_id,
                             tool_type="Callable",
-                            parent_message_uuid=assistant_message.id,
+                            parent_message_uuid=assistant_message.ecs_id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        EntityRegistry._logger.info(f"ChatThread({self.id}): Tool execution successful")
+                        EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Tool execution successful")
                     
 
                     
                     self.history.append(tool_message)
-                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
-                    EntityRegistry._logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
+                    EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Added tool message({tool_message.ecs_id})")
+                    EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
                     if self.workflow_step is not None and self.llm_config.response_format == ResponseFormat.workflow:
                         "not checking if the excuted tool is the tool that was supposed to be executed - no idea how could this be tesxted"
                         self.workflow_step += 1
                 except Exception as e:
-                    EntityRegistry._logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
+                    EntityRegistry._logger.error(f"ChatThread({self.ecs_id}): Tool operation failed: {str(e)}")
                     error_message = ChatMessage(
                         role=MessageRole.tool,
                         content=json.dumps({"error": str(e)}),
-                        chat_thread_id=self.id,
+                        chat_thread_id=self.ecs_id,
                         tool_name=tool.name,
-                        tool_uuid=tool.id,
+                        tool_uuid=tool.ecs_id,
                         tool_type="Callable" if isinstance(tool, CallableTool) else "Structured",
-                        parent_message_uuid=assistant_message.id,
+                        parent_message_uuid=assistant_message.ecs_id,
                         oai_tool_call_id=assistant_message.oai_tool_call_id
                     )
                     self.history.append(error_message)
-                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added error message({error_message.id})")
+                    EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Added error message({error_message.ecs_id})")
         
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Completed add_chat_turn_history")
+        EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Completed add_chat_turn_history")
         return parent_message, assistant_message
     
     def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:

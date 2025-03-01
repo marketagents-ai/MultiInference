@@ -18,14 +18,15 @@ from minference.threads.models import (
 )
 from minference.threads.sql_models import (
     ChatThreadSQL, ChatMessageSQL, LLMConfigSQL, UsageSQL,
-    ToolSQL,SystemPromptSQL, GeneratedJsonObjectSQL, RawOutputSQL, ProcessedOutputSQL
+    ToolSQL,SystemPromptSQL, GeneratedJsonObjectSQL, RawOutputSQL, ProcessedOutputSQL,
+    ENTITY_ORM_MAP
 )
 from minference.ecs.caregistry import CallableRegistry
 from minference.ecs.entity import EntityRegistry, SqlEntityStorage, Entity, SQLModelType
 from minference.clients.utils import parse_json_string, msg_dict_to_oai, msg_dict_to_anthropic
 
 
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.INFO)
 
 # 0) Remove the database file if it exists
 db_file = "mydatabase.db"
@@ -33,7 +34,7 @@ if os.path.exists(db_file):
     os.remove(db_file)
 
 # 1) Create your engine (here using SQLite as an example)
-engine = create_engine(f"sqlite:///{db_file}", echo=True)
+engine = create_engine(f"sqlite:///{db_file}", echo=False)
 
 # 2) Drop all tables first to ensure clean slate
 SQLModel.metadata.drop_all(engine)
@@ -52,23 +53,8 @@ def session_factory():
     return Session(engine)
 
 # 5) Map your domain classes to the corresponding ORM models
-entity_to_orm_map = {
-    # Core chat entities
-    cast(Type[Entity], ChatThread): cast(Type[SQLModelType], ChatThreadSQL),
-    cast(Type[Entity], ChatMessage): cast(Type[SQLModelType], ChatMessageSQL),
-    cast(Type[Entity], LLMConfig): cast(Type[SQLModelType], LLMConfigSQL),
-    cast(Type[Entity], Usage): cast(Type[SQLModelType], UsageSQL),
-    cast(Type[Entity], SystemPrompt): cast(Type[SQLModelType], SystemPromptSQL),
-    cast(Type[Entity], GeneratedJsonObject): cast(Type[SQLModelType], GeneratedJsonObjectSQL),
-    
-    # Tool entities (share a table)
-    cast(Type[Entity], CallableTool): cast(Type[SQLModelType], ToolSQL),
-    cast(Type[Entity], StructuredTool): cast(Type[SQLModelType], ToolSQL),
-    
-    # Output entities
-    cast(Type[Entity], RawOutput): cast(Type[SQLModelType], RawOutputSQL),
-    cast(Type[Entity], ProcessedOutput): cast(Type[SQLModelType], ProcessedOutputSQL)
-}
+# Use the imported mapping instead of defining it here
+entity_to_orm_map = ENTITY_ORM_MAP
 
 # 6) Create the SQL storage object & tell the registry to use it
 sql_storage = SqlEntityStorage(session_factory=session_factory, entity_to_orm_map=entity_to_orm_map)
@@ -110,7 +96,11 @@ async def main():
         description="Generate a programmer joke with explanation"
     )
 
-    system_string = SystemPrompt(content="You are a helpful assistant that tells programmer jokes.", name="joke_teller")
+    # Create a proper SystemPrompt instance
+    system_string = SystemPrompt(
+        name="joke_teller",
+        content="You are a helpful assistant that tells programmer jokes."
+    )
 
     # A small helper function to create chat threads
     def create_chats(client: LLMClient, model: str, response_formats: List[ResponseFormat], count=1) -> List[ChatThread]:
@@ -127,7 +117,8 @@ async def main():
                     system_prompt=system_string,
                     new_message=f"Tell me a programmer joke about the number {i}.",
                     llm_config=llm_config,
-                    forced_output=structured_tool
+                    forced_output=structured_tool,
+                    sql_root=True
                 ))
         return chats
 
@@ -138,13 +129,13 @@ async def main():
     # Maybe you want just OpenAI tool-based requests
     openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini", [ResponseFormat.tool], 1)
 
-    # Or more combos:
-    litellm_chats = create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.tool], 2) + \
-                    create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.text], 2)
-    anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.tool], 2) + \
-                      create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.text], 2)
+    # # Or more combos:
+    # litellm_chats = create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.tool], 2) + \
+    #                 create_chats(LLMClient.litellm, lite_llm_model, [ResponseFormat.text], 2)
+    # anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.tool], 2) + \
+    #                   create_chats(LLMClient.anthropic, anthropic_model, [ResponseFormat.text], 2)
 
-    all_chats = openai_chats + litellm_chats + anthropic_chats
+    # all_chats = openai_chats + litellm_chats + anthropic_chats
     all_chats = openai_chats
 
     print("Running parallel completions...")

@@ -30,7 +30,7 @@ from minference.clients.requests import (
     create_litellm_completion_config,
     create_openrouter_completion_config
 )
-from minference.ecs.entity import EntityRegistry, entity_tracer
+from minference.ecs.entity import EntityRegistry
 
 
 class RequestLimits(Entity):
@@ -53,9 +53,9 @@ class RequestLimits(Entity):
 
 def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
     """Create a hashmap of chat threads by their IDs."""
-    return {p.id: p for p in chat_threads if p.id is not None}
+    return {p.ecs_id: p for p in chat_threads if p.ecs_id is not None}
 
-@entity_tracer
+# @entity_tracer
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
@@ -79,7 +79,7 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
                     
                 EntityRegistry._logger.info(f"""
 === PROCESSING OUTPUT FOR CHAT THREAD ===
-Current Thread ID: {chat_thread.id}
+Current Thread ID: {chat_thread.ecs_id}
 Current History Length: {len(chat_thread.history)}
 Current New Message: {chat_thread.new_message}
 Current Parent ID: {chat_thread.parent_id}
@@ -92,7 +92,7 @@ Current Lineage ID: {chat_thread.lineage_id}
                     chat_thread.add_chat_turn_history(output)
                 )
                 EntityRegistry._logger.info(
-                    f"Queued history update for ChatThread({chat_thread.id})"
+                    f"Queued history update for ChatThread({chat_thread.ecs_id})"
                 )
             except Exception as e:
                 EntityRegistry._logger.error(f"""
@@ -123,7 +123,6 @@ Traceback: {e.__traceback__}
     
     return llm_outputs
 
-@entity_tracer
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'
@@ -132,20 +131,20 @@ async def run_parallel_ai_completion(
     EntityRegistry._logger.info(f"Starting parallel AI completion for {len(chat_threads)} chat threads")
     
     # Track original to forked thread mappings
-    original_ids = [chat.id for chat in chat_threads]
+    original_ids = [chat.ecs_id for chat in chat_threads]
     thread_mappings = {}
     
     # First add user messages to all chat threads
     for chat in chat_threads:
         try:
-            EntityRegistry._logger.info(f"Adding user message to ChatThread({chat.id})")
-            original_id = chat.id
+            EntityRegistry._logger.info(f"Adding user message to ChatThread({chat.ecs_id})")
+            original_id = chat.ecs_id
             result = chat.add_user_message()
            
         except Exception as e:
             if chat.llm_config.response_format != ResponseFormat.auto_tools or chat.llm_config.response_format != ResponseFormat.workflow:
                 chat_threads.remove(chat)
-                EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.id}): {e}")
+                EntityRegistry._logger.error(f"Error adding user message to ChatThread({chat.ecs_id}): {e}")
 
     # Run LLM completions in parallel
     tasks = []

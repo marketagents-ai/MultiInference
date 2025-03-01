@@ -185,7 +185,7 @@ def prepare_requests_file(chat_threads: List[ChatThread], client: str, filename:
         if request:
             metadata = {
                 "chat_thread_live_id": str(chat_thread.live_id),
-                "chat_thread_id": str(chat_thread.id),
+                "chat_thread_id": str(chat_thread.ecs_id),
                 "start_time": time.time(),
                 "end_time": None,
                 "total_time": None
@@ -239,7 +239,7 @@ def validate_vllm_request(request: Dict[str, Any]) -> bool:
 
 def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
     """Get OpenAI format request from chat thread."""
-    EntityRegistry._logger.info(f"Getting OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
+    EntityRegistry._logger.info(f"Getting OpenAI request for ChatThread({chat_thread.ecs_id}) with response format {chat_thread.llm_config.response_format}")
     messages = chat_thread.oai_messages
     request = {
         "model": chat_thread.llm_config.model,
@@ -265,7 +265,7 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         #detected workflow mode 
         if chat_thread.workflow_step is None:
             raise ValueError("Workflow step is None")
-        EntityRegistry._logger.info(f"Detected workflow mode for ChatThread({chat_thread.id}) with workflow step {chat_thread.workflow_step}")
+        EntityRegistry._logger.info(f"Detected workflow mode for ChatThread({chat_thread.ecs_id}) with workflow step {chat_thread.workflow_step}")
         if chat_thread.workflow_step >= len(chat_thread.tools):
             raise ValueError(f"Workflow step {chat_thread.workflow_step} is out of range for tools: {chat_thread.tools}")
         tool = chat_thread.tools[chat_thread.workflow_step]
@@ -287,14 +287,14 @@ def get_openai_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
         request.pop("temperature")
         request["max_completion_tokens"] = old_max_tokens
     if chat_thread.llm_config.model in ["deepseek/deepseek-r1"]:
-        EntityRegistry._logger.info(f"Adding include_reasoning to OpenAI request for ChatThread({chat_thread.id}) with model {chat_thread.llm_config.model}")
+        EntityRegistry._logger.info(f"Adding include_reasoning to OpenAI request for ChatThread({chat_thread.ecs_id}) with model {chat_thread.llm_config.model}")
         request["include_reasoning"] = True
         
     if validate_openai_request(request):
-        EntityRegistry._logger.info(f"Validated OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
+        EntityRegistry._logger.info(f"Validated OpenAI request for ChatThread({chat_thread.ecs_id}) with response format {chat_thread.llm_config.response_format}")
         return request
     else:
-        EntityRegistry._logger.error(f"Failed to validate OpenAI request for ChatThread({chat_thread.id}) with response format {chat_thread.llm_config.response_format}")
+        EntityRegistry._logger.error(f"Failed to validate OpenAI request for ChatThread({chat_thread.ecs_id}) with response format {chat_thread.llm_config.response_format}")
         return None
 
 def get_anthropic_request(chat_thread: ChatThread) -> Optional[Dict[str, Any]]:
