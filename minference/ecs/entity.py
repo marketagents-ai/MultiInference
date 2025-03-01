@@ -109,21 +109,34 @@ def compare_entity_fields(
     exclude_fields: Optional[Set[str]] = None
 ) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
     """
-    Unified comparison method for entity fields.
+    Improved comparison method for entity fields.
+    Compares content rather than references for better change detection.
     
     Returns:
         Tuple of (has_modifications, field_diffs_dict)
     """
+    logger = logging.getLogger("EntityComparison")
+    logger.info(f"Comparing entities: {type(entity1).__name__}({entity1.ecs_id}) vs {type(entity2).__name__}({entity2.ecs_id})")
+    
     if exclude_fields is None:
-        exclude_fields = {'id', 'created_at', 'parent_id', 'live_id', 'old_ids', 'lineage_id', 'from_storage'}
+        # Make sure we exclude all technical and implementation fields
+        exclude_fields = {
+            'id', 'ecs_id', 'created_at', 'parent_id', 'live_id', 
+            'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 
+            'sql_root'
+        }
     
     # Get field sets for both entities
     entity1_fields = set(entity1.model_fields.keys()) - exclude_fields
     entity2_fields = set(entity2.model_fields.keys()) - exclude_fields
     
+    logger.debug(f"Comparing {len(entity1_fields)} fields after excluding implementation fields")
+    
     # Quick check for field set differences
     if entity1_fields != entity2_fields:
-        return True, {f: {"type": "schema_change"} for f in entity1_fields.symmetric_difference(entity2_fields)}
+        diff_fields = entity1_fields.symmetric_difference(entity2_fields)
+        logger.info(f"Schema difference detected: fields {diff_fields} differ between entities")
+        return True, {f: {"type": "schema_change"} for f in diff_fields}
     
     # Detailed field comparison
     field_diffs = {}
@@ -134,14 +147,61 @@ def compare_entity_fields(
         value1 = getattr(entity1, field)
         value2 = getattr(entity2, field)
         
-        if value1 != value2:
+        # If both are entities, compare by ecs_id instead of instance
+        if isinstance(value1, Entity) and isinstance(value2, Entity):
+            if value1.ecs_id != value2.ecs_id:
+                has_diffs = True
+                logger.info(f"Field '{field}' contains different entities: {value1.ecs_id} vs {value2.ecs_id}")
+                field_diffs[field] = {
+                    "type": "modified",
+                    "old_id": str(value2.ecs_id),
+                    "new_id": str(value1.ecs_id)
+                }
+        # If both are lists, compare items individually
+        elif isinstance(value1, list) and isinstance(value2, list):
+            if len(value1) != len(value2):
+                has_diffs = True
+                logger.info(f"Field '{field}' has different list lengths: {len(value1)} vs {len(value2)}")
+                field_diffs[field] = {
+                    "type": "modified",
+                    "old_length": len(value2),
+                    "new_length": len(value1)
+                }
+            else:
+                # For lists of entities, compare by ecs_id
+                if all(isinstance(v, Entity) for v in value1) and all(isinstance(v, Entity) for v in value2):
+                    ids1 = {e.ecs_id for e in value1}
+                    ids2 = {e.ecs_id for e in value2}
+                    if ids1 != ids2:
+                        has_diffs = True
+                        logger.info(f"Field '{field}' contains lists of different entities")
+                        logger.debug(f"List 1 IDs: {ids1}")
+                        logger.debug(f"List 2 IDs: {ids2}")
+                        field_diffs[field] = {
+                            "type": "modified",
+                            "old_ids": [str(id) for id in ids2],
+                            "new_ids": [str(id) for id in ids1]
+                        }
+                # Otherwise compare normally
+                elif value1 != value2:
+                    has_diffs = True
+                    logger.info(f"Field '{field}' has different list contents")
+                    field_diffs[field] = {
+                        "type": "modified",
+                        "old": value2,
+                        "new": value1
+                    }
+        # For all other types, compare normally
+        elif value1 != value2:
             has_diffs = True
+            logger.info(f"Field '{field}' has different values: {value1} vs {value2}")
             field_diffs[field] = {
                 "type": "modified",
                 "old": value2,
                 "new": value1
             }
     
+    logger.info(f"Comparison result: has_diffs={has_diffs}, found {len(field_diffs)} different fields")
     return has_diffs, field_diffs
 
 def create_cold_snapshot(entity: 'Entity') -> 'Entity':
@@ -187,8 +247,33 @@ class EntityDiff:
         return diff
 
     def has_changes(self) -> bool:
-        """Check if there are any differences."""
-        return bool(self.field_diffs)
+        """Check if there are any significant differences that require forking."""
+        logger = logging.getLogger("EntityDiff")
+        
+        # Empty diffs = no changes
+        if not self.field_diffs:
+            logger.debug("No field differences found")
+            return False
+            
+        logger.info(f"Checking significance of {len(self.field_diffs)} field differences")
+        
+        # For each field, check if it's a significant change (not just implementation details)
+        for field, diff_info in self.field_diffs.items():
+            # Skip implementation fields that don't need to trigger a new version
+            if field in {
+                'id', 'ecs_id', 'live_id', 'from_storage', 'force_parent_fork', 
+                'sql_root', 'created_at', 'parent_id', 'old_ids', 'lineage_id'
+            }:
+                logger.debug(f"Field '{field}' is an implementation detail - not significant")
+                continue
+                
+            # Any other field change is significant
+            logger.info(f"Field '{field}' has significant changes (type: {diff_info.get('type', 'unknown')})")
+            return True
+            
+        # No significant changes found
+        logger.info("No significant changes found - all differences are implementation details")
+        return False
 
 class Entity(BaseModel):
     """
@@ -261,11 +346,18 @@ class Entity(BaseModel):
     def register_on_create(self) -> Self:
         """Register this entity when it's created."""
         from __main__ import EntityRegistry
-        # Only register if:
-        # 1. Not from storage
-        # 2. AND is marked as a root entity
-        if not self.from_storage and self.sql_root:
-            EntityRegistry.register(self)
+        
+        # Check if we're using SQL storage or in-memory storage
+        storage_info = EntityRegistry.get_registry_status()
+        using_sql_storage = storage_info.get('storage') == 'sql'
+        
+        # Only register if the entity is not from storage
+        # For SQL storage: Also check that sql_root is True
+        # For in-memory storage: Register all new entities (traditional behavior)
+        if not self.from_storage:
+            if not using_sql_storage or self.sql_root:
+                EntityRegistry.register(self)
+        
         return self
 
     def fork(self: T_Self) -> T_Self:
@@ -363,38 +455,88 @@ class Entity(BaseModel):
     def has_modifications(self, other: "Entity") -> Tuple[bool, Dict["Entity", EntityDiff]]:
         """
         Check if this entity or any nested entities differ from their stored versions.
+        Smarter comparison to reduce false positives in modification detection.
+        
         Returns:
             Tuple of (any_changes, {changed_entity: its_changes})
         """
+        from __main__ import EntityRegistry
+        # Get storage type to adjust comparison strictness
+        storage_info = EntityRegistry.get_registry_status()
+        using_sql_storage = storage_info.get('storage') == 'sql'
+        
+        logger = logging.getLogger("EntityModification")
+        logger.info(f"Checking modifications: {type(self).__name__}({self.ecs_id}) vs {type(other).__name__}({other.ecs_id}) [SQL: {using_sql_storage}]")
+        
         modified_entities: Dict["Entity", EntityDiff] = {}
+        
+        # Early exit if comparing an entity with itself
+        # only if we are using sql storage
+        if self.ecs_id == other.ecs_id and self.live_id == other.live_id and using_sql_storage:
+            logger.debug(f"Same entity instance detected (same ecs_id and live_id): {self.ecs_id}")
+            return False, {}
         
         # Get all sub-entities first to ensure bottom-up processing
         my_subs = self.get_sub_entities()
         other_subs = other.get_sub_entities()
         
+        logger.debug(f"Found {len(my_subs)} sub-entities in current entity and {len(other_subs)} in other entity")
+        
+        # Create lookup dictionaries by ecs_id for more efficient matching
+        my_subs_by_id = {sub.ecs_id: sub for sub in my_subs}
+        other_subs_by_id = {sub.ecs_id: sub for sub in other_subs}
+        
         # Check sub-entities first (bottom-up)
-        for my_sub in my_subs:
-            other_sub = next((e for e in other_subs if e.ecs_id == my_sub.ecs_id), None)
-            if other_sub:
+        for sub_id, my_sub in my_subs_by_id.items():
+            if sub_id in other_subs_by_id:
+                other_sub = other_subs_by_id[sub_id]
+                logger.debug(f"Checking sub-entity: {type(my_sub).__name__}({sub_id})")
                 # Recursively check nested entity
                 sub_changed, sub_modified = my_sub.has_modifications(other_sub)
                 if sub_changed:
+                    logger.info(f"Sub-entity {type(my_sub).__name__}({sub_id}) has changes")
                     # If a nested entity changed, add it and its modifications
                     modified_entities.update(sub_modified)
-                    # Mark parent as needing fork (but without direct changes)
-                    if self not in modified_entities:
-                        modified_entities[self] = EntityDiff()
+                    # Only mark parent as needing fork if there are significant changes
+                    if any(diff.has_changes() for diff in sub_modified.values()):
+                        logger.info(f"Sub-entity {type(my_sub).__name__}({sub_id}) has significant changes affecting parent")
+                        if self not in modified_entities:
+                            modified_entities[self] = EntityDiff()
         
         # Then check direct fields (after sub-entities)
         has_diffs, field_diffs = compare_entity_fields(self, other)
-        if has_diffs:
-            # If we already have an empty diff (from nested changes), update it
-            if self in modified_entities:
-                modified_entities[self].field_diffs.update(field_diffs)
-            else:
-                modified_entities[self] = EntityDiff.from_diff_dict(field_diffs)
         
-        return bool(modified_entities), modified_entities
+        if has_diffs:
+            logger.info(f"Direct field differences found in {type(self).__name__}({self.ecs_id})")
+            significant_changes = False
+            for field, diff_info in field_diffs.items():
+                # For in-memory mode, be more lenient about what counts as a significant change
+                if not using_sql_storage:
+                    if field not in {'id', 'ecs_id', 'live_id', 'created_at', 'parent_id', 'old_ids', 'lineage_id'}:
+                        logger.info(f"In-memory mode: Field '{field}' has significant changes")
+                        significant_changes = True
+                        break
+                # For SQL mode, be more strict
+                else:
+                    if field not in {
+                        'id', 'ecs_id', 'live_id', 'created_at', 'parent_id',
+                        'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 'sql_root'
+                    }:
+                        logger.info(f"SQL mode: Field '{field}' has significant changes")
+                        significant_changes = True
+                        break
+                            
+            if significant_changes:
+                logger.info(f"Entity {type(self).__name__}({self.ecs_id}) has significant changes requiring fork")
+                # If we already have an empty diff (from nested changes), update it
+                if self in modified_entities:
+                    modified_entities[self].field_diffs.update(field_diffs)
+                else:
+                    modified_entities[self] = EntityDiff.from_diff_dict(field_diffs)
+        
+        needs_fork = bool(modified_entities)
+        logger.info(f"Modification check result: needs_fork={needs_fork}, modified_entities={len(modified_entities)}")
+        return needs_fork, modified_entities
 
     def compute_diff(self, other: "Entity") -> EntityDiff:
         """Compute detailed differences between this entity and another entity."""
@@ -406,7 +548,12 @@ class Entity(BaseModel):
         Skip versioning fields, plus recursively dump nested Entities.
         """
         exclude_keys = set(kwargs.get('exclude', set()))
-        exclude_keys |= {'id','created_at','parent_id','live_id','old_ids','lineage_id'}
+        # Ensure we exclude both old and new field names and all implementation details
+        exclude_keys |= {
+            'id', 'ecs_id', 'created_at', 'parent_id', 'live_id', 
+            'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 
+            'sql_root'
+        }
         kwargs['exclude'] = exclude_keys
 
         data = super().model_dump(*args, **kwargs)
@@ -567,6 +714,7 @@ class InMemoryEntityStorage(EntityStorage):
     def get_registry_status(self) -> Dict[str, Any]:
         """Get status information about the registry."""
         return {
+            "storage": "in_memory",
             "in_memory": True,
             "entity_count": len(self._registry),
             "lineage_count": len(self._lineages)
@@ -1253,8 +1401,8 @@ try:
 
 except ImportError:
     # SQLModel not available, skip SQL storage implementation
-    BaseEntitySQL = None  # type: ignore
-    SqlEntityStorage = None  # type: ignore
+    BaseEntitySQL = None  # type: ignore[assignment]
+    SqlEntityStorage = None  # type: ignore[assignment]
 
 
 ##############################
@@ -1486,31 +1634,43 @@ class EntityRegistry(BaseRegistry):
 # 8) Entity Tracing
 ##############################
 
-def _find_entities(obj: Any) -> Dict[int, Entity]:
-    """
-    Recursively scan an object for Entity instances.
-    Returns a dictionary mapping object IDs to entities.
-    """
-    found: Dict[int, Entity] = {}
+def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
+    """Helper to collect all Entity instances from args and kwargs with their memory ids."""
+    logger = logging.getLogger("EntityCollection")
+    logger.debug(f"Collecting entities from {len(args)} args and {len(kwargs)} kwargs")
     
-    def scan(item: Any) -> None:
-        if isinstance(item, Entity):
-            found[id(item)] = item
-        elif isinstance(item, (list, tuple, set)):
-            for element in item:
-                scan(element)
-        elif isinstance(item, dict):
-            for value in item.values():
-                scan(value)
+    entities = {}
     
-    scan(obj)
-    return found
+    def scan(obj: Any, path: str = "") -> None:
+        if isinstance(obj, Entity):
+            entities[id(obj)] = obj
+            logger.debug(f"Found entity {type(obj).__name__}({obj.ecs_id}) at path {path}")
+        elif isinstance(obj, (list, tuple, set)):
+            logger.debug(f"Scanning collection at path {path} with {len(obj)} items")
+            for i, item in enumerate(obj):
+                scan(item, f"{path}[{i}]")
+        elif isinstance(obj, dict):
+            logger.debug(f"Scanning dict at path {path} with {len(obj)} keys")
+            for k, v in obj.items():
+                scan(v, f"{path}.{k}")
+    
+    # Scan args and kwargs
+    for i, arg in enumerate(args):
+        scan(arg, f"args[{i}]")
+    for key, arg in kwargs.items():
+        scan(arg, f"kwargs[{key}]")
+    
+    logger.info(f"Collected {len(entities)} unique entities")
+    return entities
 
 def _check_and_process_entities(entities: Dict[int, Entity], fork_if_modified: bool = True) -> None:
     """
     Check entities for modifications and optionally fork them.
     Process in bottom-up order (nested entities first).
     """
+    logger = logging.getLogger("EntityProcessing")
+    logger.info(f"Processing {len(entities)} entities, fork_if_modified={fork_if_modified}")
+    
     from __main__ import EntityRegistry
     
     # Build dependency graph
@@ -1522,81 +1682,225 @@ def _check_and_process_entities(entities: Dict[int, Entity], fork_if_modified: b
             if nested_id in entities:
                 # Add dependency: entity depends on nested_entity
                 dependency_graph[entity_id].append(nested_id)
+                logger.debug(f"Dependency: {type(entity).__name__}({entity.ecs_id}) depends on {type(sub).__name__}({sub.ecs_id})")
+    
+    logger.debug(f"Built dependency graph with {len(dependency_graph)} nodes")
     
     # Topological sort (process leaves first)
     processed: Set[int] = set()
     
     def process_entity(entity_id: int) -> None:
         if entity_id in processed:
+            logger.debug(f"Entity {entity_id} already processed, skipping")
             return
             
         # Process dependencies first
         for dep_id in dependency_graph[entity_id]:
             if dep_id not in processed:
+                logger.debug(f"Processing dependency {dep_id} first")
                 process_entity(dep_id)
                 
         # Process this entity
         entity = entities[entity_id]
+        logger.info(f"Processing entity {type(entity).__name__}({entity.ecs_id})")
         cold = EntityRegistry.get_cold_snapshot(entity.ecs_id)
         
-        if cold and entity.has_modifications(cold) and fork_if_modified:
-            entity.fork()
+        if cold:
+            needs_fork, modified_entities = entity.has_modifications(cold)
+            if needs_fork and fork_if_modified:
+                logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) has modifications, forking")
+                forked = entity.fork()
+                logger.debug(f"Forked to new entity {forked.ecs_id}")
+            else:
+                logger.debug(f"Entity {type(entity).__name__}({entity.ecs_id}) has no modifications or fork_if_modified=False")
+        else:
+            logger.debug(f"No cold snapshot found for entity {entity.ecs_id}")
             
         processed.add(entity_id)
+        logger.debug(f"Marked entity {entity_id} as processed")
     
     # Process all entities
     for entity_id in entities:
         if entity_id not in processed:
+            logger.debug(f"Starting processing for entity {entity_id}")
             process_entity(entity_id)
+    
+    logger.info(f"Finished processing {len(processed)}/{len(entities)} entities")
 
 
 def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
     """
-    Improved decorator that checks and forks entities before and after function call.
-    Handles async functions and detects entities in a bottom-up order.
+    Decorator to trace entity modifications and handle versioning.
+    Automatically detects and handles all Entity instances in arguments.
+    Works with both sync and async functions, and both storage types.
     """
-    # Check if function is async by looking for _is_coroutine attribute
-    is_async = getattr(func, '_is_coroutine', False) or hasattr(func, '__await__')
+    logger = logging.getLogger("EntityTracer")
+    logger.info(f"Decorating function {func.__name__} with entity_tracer")
     
+    # Handle detection of async functions safely
+    is_async = False
+    try:
+        # Try to import inspect locally to avoid any module conflicts
+        import inspect as local_inspect
+        is_async = local_inspect.iscoroutinefunction(func)
+    except (ImportError, AttributeError):
+        # Fallback method if inspect.iscoroutinefunction is not available
+        is_async = hasattr(func, '__await__') or (hasattr(func, '__code__') and func.__code__.co_flags & 0x80)
+    
+    logger.debug(f"Function {func.__name__} is {'async' if is_async else 'sync'}")
+    
+    @wraps(func)
+    async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+        logger.info(f"Entering async wrapper for {func.__name__}")
+        
+        # Collect all entities from inputs
+        entities = _collect_entities(args, kwargs)
+        logger.info(f"Collected {len(entities)} entities from arguments")
+        
+        # Get storage type to adjust behavior
+        from __main__ import EntityRegistry
+        storage_info = EntityRegistry.get_registry_status()
+        using_sql_storage = storage_info.get('storage') == 'sql'
+        logger.debug(f"Storage type: {'SQL' if using_sql_storage else 'In-Memory'}")
+        
+        # Check for modifications before call
+        fork_count = 0
+        for entity_id, entity in entities.items():
+            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) before function call")
+            cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
+            if cold_snapshot:
+                # Special handling based on storage type
+                if using_sql_storage:
+                    needs_fork, modified = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
+                        entity.fork()
+                        fork_count += 1
+                else:
+                    # Simpler check for in-memory mode for better tracing
+                    needs_fork, _ = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
+                        entity.fork()
+                        fork_count += 1
+            else:
+                logger.debug(f"No cold snapshot found for entity {entity.ecs_id}")
+        
+        logger.info(f"Forked {fork_count} entities before calling {func.__name__}")
+
+        # Call the function
+        logger.debug(f"Calling async function {func.__name__}")
+        result = await func(*args, **kwargs)
+        logger.debug(f"Function {func.__name__} returned: {type(result)}")
+
+        # Check for modifications after call - same logic as before
+        after_fork_count = 0
+        for entity_id, entity in entities.items():
+            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) after function call")
+            cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
+            if cold_snapshot:
+                if using_sql_storage:
+                    needs_fork, modified = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
+                        entity.fork()
+                        after_fork_count += 1
+                else:
+                    needs_fork, _ = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
+                        entity.fork()
+                        after_fork_count += 1
+            else:
+                logger.debug(f"No cold snapshot found for entity {entity.ecs_id} after call")
+            
+        logger.info(f"Forked {after_fork_count} entities after calling {func.__name__}")
+        
+        # If result is an entity that was modified, return the forked version
+        if isinstance(result, Entity) and id(result) in entities:
+            logger.info(f"Result is an entity that was in arguments, returning most recent version")
+            return entities[id(result)]
+
+        logger.debug(f"Exiting async wrapper for {func.__name__}")
+        return result
+    
+    @wraps(func)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        logger.info(f"Entering sync wrapper for {func.__name__}")
+        
+        # Collect all entities from inputs
+        entities = _collect_entities(args, kwargs)
+        logger.info(f"Collected {len(entities)} entities from arguments")
+        
+        # Get storage type to adjust behavior
+        from __main__ import EntityRegistry
+        storage_info = EntityRegistry.get_registry_status()
+        using_sql_storage = storage_info.get('storage') == 'sql'
+        logger.debug(f"Storage type: {'SQL' if using_sql_storage else 'In-Memory'}")
+        
+        # Check for modifications before call
+        fork_count = 0
+        for entity_id, entity in entities.items():
+            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) before function call")
+            cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
+            if cold_snapshot:
+                # Special handling based on storage type
+                if using_sql_storage:
+                    needs_fork, modified = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
+                        entity.fork()
+                        fork_count += 1
+                else:
+                    # Simpler check for in-memory mode for better tracing
+                    needs_fork, _ = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
+                        entity.fork()
+                        fork_count += 1
+            else:
+                logger.debug(f"No cold snapshot found for entity {entity.ecs_id}")
+        
+        logger.info(f"Forked {fork_count} entities before calling {func.__name__}")
+
+        # Call the function
+        logger.debug(f"Calling sync function {func.__name__}")
+        result = func(*args, **kwargs)
+        logger.debug(f"Function {func.__name__} returned: {type(result)}")
+
+        # Check for modifications after call - same logic as before
+        after_fork_count = 0
+        for entity_id, entity in entities.items():
+            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) after function call")
+            cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
+            if cold_snapshot:
+                if using_sql_storage:
+                    needs_fork, modified = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
+                        entity.fork()
+                        after_fork_count += 1
+                else:
+                    needs_fork, _ = entity.has_modifications(cold_snapshot)
+                    if needs_fork:
+                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
+                        entity.fork()
+                        after_fork_count += 1
+            else:
+                logger.debug(f"No cold snapshot found for entity {entity.ecs_id} after call")
+            
+        logger.info(f"Forked {after_fork_count} entities after calling {func.__name__}")
+        
+        # If result is an entity that was modified, return the forked version
+        if isinstance(result, Entity) and id(result) in entities:
+            logger.info(f"Result is an entity that was in arguments, returning most recent version")
+            return entities[id(result)]
+
+        logger.debug(f"Exiting sync wrapper for {func.__name__}")
+        return result
+    
+    # Use the appropriate wrapper based on whether the function is async
     if is_async:
-        @wraps(func)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Find entities before function call
-            entities_before = _find_entities((args, kwargs))
-            
-            # Check and process entities before function call
-            _check_and_process_entities(entities_before)
-            
-            # Call the function
-            result = await func(*args, **kwargs)
-            
-            # Check and process entities after function call
-            _check_and_process_entities(entities_before)
-            
-            # Handle result if it's an entity
-            if isinstance(result, Entity) and id(result) in entities_before:
-                return entities_before[id(result)]
-                
-            return result
         return async_wrapper
     else:
-        @wraps(func)
-        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Find entities before function call
-            entities_before = _find_entities((args, kwargs))
-            
-            # Check and process entities before function call
-            _check_and_process_entities(entities_before)
-            
-            # Call the function
-            result = func(*args, **kwargs)
-            
-            # Check and process entities after function call
-            _check_and_process_entities(entities_before)
-            
-            # Handle result if it's an entity
-            if isinstance(result, Entity) and id(result) in entities_before:
-                return entities_before[id(result)]
-                
-            return result
         return sync_wrapper

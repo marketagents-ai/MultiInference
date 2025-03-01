@@ -55,6 +55,7 @@ async def main():
                     new_message=f"Tell me a programmer joke about the number {i}.",
                     llm_config=llm_config,
                     forced_output=structured_tool,
+                    sql_root=True
                     
                 )
             )
