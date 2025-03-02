@@ -15,7 +15,7 @@ async def main():
     load_dotenv()
     EntityRegistry()
     CallableRegistry()
-    oai_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
+    oai_request_limits = RequestLimits(max_requests_per_minute=50000, max_tokens_per_minute=2000000000)
     lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
     anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
     lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
@@ -65,7 +65,7 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1000)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
     litellm_chats = create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.tool],5)+create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.text],5)
     anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.tool],5)+create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.text],5)
     
@@ -100,5 +100,5 @@ async def main():
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
     #print mermaid graph of first chat
-    print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
+    # print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
 

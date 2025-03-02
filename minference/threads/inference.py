@@ -55,7 +55,6 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
     """Create a hashmap of chat threads by their IDs."""
     return {p.id: p for p in chat_threads if p.id is not None}
 
-@entity_tracer
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
@@ -70,8 +69,9 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
     
     for output in llm_outputs:
         if output.chat_thread_live_id:
+            
             try:
-                # Get the latest version from registry
+                # Get the latest version from the thread mapping
                 chat_thread = thread_id_mappings.get(output.chat_thread_live_id,None)
                 if not chat_thread:
                     EntityRegistry._logger.error(f"ChatThread({output.chat_thread_id}) not found in temporary thread_id_mappings")
@@ -123,7 +123,6 @@ Traceback: {e.__traceback__}
     
     return llm_outputs
 
-@entity_tracer
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'

@@ -318,6 +318,9 @@ class EntityRegistry(BaseRegistry[EType]):
     _timestamps: Dict[UUID, datetime] = {}
     _inference_orchestrator: Optional[object] = None
     _lineages: Dict[UUID, List[UUID]] = {}
+    _logger = logging.getLogger(__name__)
+    _logger.setLevel(logging.WARNING)
+    _tracing_enabled: bool = True  # New state flag for controlling tracing
 
     @classmethod
     def has_entity(cls, entity_id: UUID) -> bool:
@@ -694,6 +697,18 @@ class EntityRegistry(BaseRegistry[EType]):
         cls._registry.clear()
         cls._timestamps.clear()
         cls._lineages.clear()
+
+    @classmethod
+    def set_tracing_enabled(cls, enabled: bool) -> None:
+        """Enable or disable decorator-based entity tracing."""
+        cls._tracing_enabled = enabled
+        cls._logger.debug(f"Entity tracing {'enabled' if enabled else 'disabled'}")
+
+    @classmethod
+    def is_tracing_enabled(cls) -> bool:
+        """Check if decorator-based entity tracing is enabled."""
+        return cls._tracing_enabled
+
 ########################################
 # 4) Decorators
 ########################################
@@ -747,50 +762,50 @@ def entity_tracer(func):
     Decorator to trace entity modifications and handle versioning.
     Automatically detects and handles all Entity instances in arguments.
     Works with both sync and async functions.
+    
+    If tracing is disabled in EntityRegistry, this decorator becomes a pass-through.
     """
     if inspect.iscoroutinefunction(func):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            # Collect all entities from inputs
+            # Skip tracing if disabled
+            if not EntityRegistry.is_tracing_enabled():
+                return await func(*args, **kwargs)
+
+            # Original tracing logic
             entities = _collect_entities(args, kwargs)
-            
-            # Check for modifications before call
             for entity in entities.values():
                 _check_and_fork_modified(entity)
-
-            # Call the original function
+            
             result = await func(*args, **kwargs)
-
-            # Check for modifications after call
+            
             for entity in entities.values():
                 _check_and_fork_modified(entity)
                 
-            # If result is an entity that was modified, return the forked version
             if isinstance(result, Entity) and id(result) in entities:
                 return entities[id(result)]
-
             return result
+            
         return async_wrapper
     else:
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            # Collect all entities from inputs
+            # Skip tracing if disabled
+            if not EntityRegistry.is_tracing_enabled():
+                return func(*args, **kwargs)
+
+            # Original tracing logic
             entities = _collect_entities(args, kwargs)
-            
-            # Check for modifications before call
             for entity in entities.values():
                 _check_and_fork_modified(entity)
-
-            # Call the original function
+            
             result = func(*args, **kwargs)
-
-            # Check for modifications after call
+            
             for entity in entities.values():
                 _check_and_fork_modified(entity)
                 
-            # If result is an entity that was modified, return the forked version
             if isinstance(result, Entity) and id(result) in entities:
                 return entities[id(result)]
-
             return result
+            
         return sync_wrapper
