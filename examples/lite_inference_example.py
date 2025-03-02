@@ -18,7 +18,7 @@ async def main():
     oai_request_limits = RequestLimits(max_requests_per_minute=50000, max_tokens_per_minute=2000000000)
     lite_llm_request_limits = RequestLimits(max_requests_per_minute=500, max_tokens_per_minute=200000)
     anthropic_request_limits = RequestLimits(max_requests_per_minute=50, max_tokens_per_minute=20000)
-    lite_llm_model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
+    lite_llm_model = "deephermes-3-llama-3-8b-preview-mlx"
     anthropic_model = "claude-3-5-sonnet-latest"
 
 
@@ -75,6 +75,7 @@ async def main():
     print("Running parallel completions...")
     all_chats = openai_chats+ litellm_chats+anthropic_chats
     all_chats = openai_chats
+    all_chats = [litellm_chats[0]]
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
@@ -99,6 +100,7 @@ async def main():
 
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
+    print(all_chats[0].history)
     #print mermaid graph of first chat
     # print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
 

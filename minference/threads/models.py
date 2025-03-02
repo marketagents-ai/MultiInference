@@ -1031,7 +1031,30 @@ class RawOutput(Entity):
     def _parse_json_string(self, content: str) -> Optional[Dict[str, Any]]:
         """Parse JSON string safely."""
         try:
-            # Try direct JSON parsing first
+            # Check for tool request markers first
+            import re
+            tool_request_pattern = r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]'
+            tool_match = re.search(tool_request_pattern, content, re.DOTALL)
+            if tool_match:
+                try:
+                    # Get the JSON string
+                    json_str = tool_match.group(1).strip()
+                    
+                    # Replace Python-style booleans with JSON-style booleans
+                    json_str = re.sub(r'\bTrue\b', 'true', json_str)
+                    json_str = re.sub(r'\bFalse\b', 'false', json_str)
+                    
+                    # Parse the JSON
+                    data = json.loads(json_str)
+                    
+                    # Extract the arguments field
+                    if "arguments" in data:
+                        return data["arguments"]
+                    return data
+                except json.JSONDecodeError:
+                    pass  # Fall through to other methods if this fails
+            
+            # Try direct JSON parsing next
             return json.loads(content)
         except json.JSONDecodeError:
             # Fall back to more lenient parsing if needed

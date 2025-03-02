@@ -102,15 +102,18 @@ async def process_api_requests_from_file(
     logging.basicConfig(level=logging_level)
     logging.debug(f"Logging initialized at level {logging_level}")
 
-    # infer API endpoint and construct request header
-    api_endpoint = api_endpoint_from_url(request_url)
-    request_header = {"Authorization": f"Bearer {api_key}"}
-    # use api-key header for Azure deployments
+    # initialize with basic headers that all APIs need
+    request_header = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    # Add API-specific headers
     if '/deployments' in request_url:
-        request_header = {"api-key": f"{api_key}"}
-    # Add Anthropic-specific headers
-    if 'anthropic.com' in request_url:
-        request_header = {
+        request_header["Authorization"] = request_header.pop("Authorization")  # Remove standard auth
+        request_header["api-key"] = api_key  # Add Azure-specific auth
+    elif 'anthropic.com' in request_url:
+        request_header = {  # Replace with Anthropic headers
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
@@ -155,6 +158,11 @@ async def process_api_requests_from_file(
                             # get new request
                             request_json = json.loads(next(requests))
                             metadata, actual_request = request_json  # Unpack the list
+                            api_endpoint = api_endpoint_from_url(request_url)  # Extract API endpoint
+                            if api_endpoint == "chat":
+                                # For chat completions, convert max_tokens to max_completion_tokens
+                                if "max_tokens" in actual_request:
+                                    actual_request["max_completion_tokens"] = actual_request.pop("max_tokens")
                             next_request = APIRequest(
                                 task_id=next(task_id_generator),
                                 request_json=actual_request,
@@ -342,10 +350,16 @@ class APIRequest:
         logging.info(f"Starting request #{self.task_id}")
         error = None
         try:
-            async with session.post(
-                url=request_url, headers=request_header, json=self.request_json
-            ) as response:
-                response = await response.json()
+            # Add the accept header
+            request_header["accept"] = "application/json"
+            
+            response = await session.post(
+                url=request_url,
+                headers=request_header,
+                json=self.request_json,
+            )
+            
+            response = await response.json()
             if "error" in response:
                 logging.warning(
                     f"Request {self.task_id} failed with error {response['error']}"
@@ -397,7 +411,6 @@ def api_endpoint_from_url(request_url: str) -> Literal["completions", "embedding
     """
     Extracts the API endpoint from a given request URL.
 
-
     This function applies a regular expression search to find the API endpoint pattern within the provided URL.
     It supports extracting endpoints from standard OpenAI API URLs, custom Azure OpenAI deployment URLs,
     and vLLM endpoints.
@@ -422,25 +435,22 @@ def api_endpoint_from_url(request_url: str) -> Literal["completions", "embedding
         # for Azure OpenAI deployment urls
         match = re.search(r"^https://[^/]+/openai/deployments/[^/]+/(.+?)(\?|$)", request_url)
         if match is None:
-            # for vLLM endpoints
-            match = re.search(r"^http://localhost:8000/v\d+/(.+)$", request_url)
+            # for vLLM endpoints - expanded to include Modal URLs
+            match = re.search(r"^https?://[^/]+/v\d+/(.+)$", request_url)
             if match is None:
                 if "v1/chat/completions" in request_url:
-                    match = [None,"chat"]
+                    match = [None, "chat"]
                 else:
                     raise ValueError(f"Invalid URL: {request_url}")
 
-                
     if "messages" in match[1]:
         return "messages"
-
     elif "chat" in match[1]:
         return "chat"
     elif "embeddings" in match[1]:
         return "embeddings"
     else:
         return "completions"
-
 
 
 def append_to_jsonl(data, filename: str) -> None:
