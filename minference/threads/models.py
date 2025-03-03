@@ -70,7 +70,7 @@ from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
 
 T_Self = TypeVar('T_Self', bound='CallableTool')
 logger = getLogger("minference.threads.models")
-logger.setLevel(INFO)
+logger.setLevel(WARNING)
 
 
 class CallableTool(Entity):
@@ -1031,83 +1031,175 @@ class RawOutput(Entity):
     def _parse_json_string(self, content: str) -> Optional[Dict[str, Any]]:
         """Parse JSON string safely."""
         try:
-            # Check for tool request markers first
+            cleaned_content = content
             import re
-            tool_request_pattern = r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]'
-            tool_match = re.search(tool_request_pattern, content, re.DOTALL)
-            if tool_match:
-                try:
-                    # Get the JSON string
-                    json_str = tool_match.group(1).strip()
-                    
-                    # Replace Python-style booleans with JSON-style booleans
-                    json_str = re.sub(r'\bTrue\b', 'true', json_str)
-                    json_str = re.sub(r'\bFalse\b', 'false', json_str)
-                    
-                    # Parse the JSON
-                    data = json.loads(json_str)
-                    
-                    # Extract the arguments field
-                    if "arguments" in data:
-                        return data["arguments"]
-                    return data
-                except json.JSONDecodeError:
-                    pass  # Fall through to other methods if this fails
             
-            # Try direct JSON parsing next
-            return json.loads(content)
-        except json.JSONDecodeError:
-            # Fall back to more lenient parsing if needed
-            import re
-            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            # Try stripping tool_call tags first
+            tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+            if '<tool_call>' in cleaned_content:
+                match = re.search(tool_call_pattern, cleaned_content, re.DOTALL)
+                if match:
+                    cleaned_content = match.group(1).strip()
+            
+            # Try stripping tool_request tags
+            tool_request_pattern = r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]'
+            if '[TOOL_REQUEST]' in cleaned_content:
+                match = re.search(tool_request_pattern, cleaned_content, re.DOTALL)
+                if match:
+                    cleaned_content = match.group(1).strip()
+
+            # Try direct JSON parsing of cleaned content
+            try:
+                return json.loads(cleaned_content)
+            except json.JSONDecodeError:
+                pass
+
+            # Try original content if cleaned parsing failed
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                pass
+
+            # Try code block format
+            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
             if json_match:
                 try:
                     return json.loads(json_match.group(1))
                 except json.JSONDecodeError:
-                    return None
+                    pass
+
+            # Try Python-style boolean conversion
+            try:
+                # Replace Python-style booleans with JSON-style booleans
+                cleaned_content = re.sub(r'\bTrue\b', 'true', cleaned_content)
+                cleaned_content = re.sub(r'\bFalse\b', 'false', cleaned_content)
+                cleaned_content = re.sub(r'\bNone\b', 'null', cleaned_content)
+                return json.loads(cleaned_content)
+            except json.JSONDecodeError:
+                pass
+
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing JSON string: {str(e)}")
             return None
 
     def _parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
         """Parse OpenAI or DeepSeek completion format."""
+        logger.info("Starting _parse_oai_completion")
         choice = chat_completion.choices[0]
         message = choice.message
         
-        # Handle DeepSeek's reasoning field if present
         if isinstance(chat_completion, DeepSeekChatCompletion) and isinstance(message, DeepSeekChatCompletionMessage):
             content = f"<think>{message.reasoning}</think>\n{message.content}" if message.reasoning else message.content
         else:
             content = message.content
+        
+        if content is not None:
+            logger.info(f"Initial content: {content[:200]}...")
+        else:
+            logger.info("Initial content is None")
 
         json_object = None
         usage = None
 
-        # Handle tool calls
+        # Handle explicit tool calls (OpenAI format)
         if message.tool_calls:
+            logger.info("Found explicit tool_calls in message")
             tool_call = message.tool_calls[0]
             name = tool_call.function.name
             tool_call_id = tool_call.id
-            try:
-                object_dict = json.loads(tool_call.function.arguments)
-                json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
-            except json.JSONDecodeError:
-                json_object = GeneratedJsonObject(name=name, object={"raw": tool_call.function.arguments}, tool_call_id=tool_call_id)
-        
-        # Handle content parsing
+            
+            # Check if arguments contain a nested tool_call
+            arguments = tool_call.function.arguments
+            logger.info(f"Raw tool call arguments: {arguments[:200]}...")
+            
+            if '<tool_call>' in arguments:
+                logger.info("Found nested tool_call in arguments, attempting to extract")
+                import re
+                tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+                match = re.search(tool_call_pattern, arguments, re.DOTALL)
+                if match:
+                    try:
+                        tool_data = json.loads(match.group(1).strip())
+                        logger.info(f"Successfully parsed nested tool data: {tool_data}")
+                        json_object = GeneratedJsonObject(
+                            name=tool_data.get("name", name),
+                            object=tool_data.get("arguments", {}),
+                            tool_call_id=tool_call_id
+                        )
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse nested tool call JSON: {e}")
+            
+            # If nested parsing failed, try direct parsing
+            if json_object is None:
+                try:
+                    object_dict = json.loads(arguments)
+                    json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
+                    logger.info(f"Successfully parsed direct tool call for tool: {name}")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse tool call arguments: {e}")
+                    json_object = GeneratedJsonObject(name=name, object={"raw": arguments}, tool_call_id=tool_call_id)
+
+        # Handle content parsing (for vLLM and others that don't use tool_calls)
         elif content is not None:
-            if self.completion_kwargs:
-                name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
-            else:
-                name = None
-            parsed_json = self._parse_json_string(content)
-            if parsed_json:
-                json_object = GeneratedJsonObject(
-                    name="parsed_content" if name is None else name,
-                    object=parsed_json
-                )
-                content = None
+            logger.info("No explicit tool_calls, trying content parsing")
+            import re
+            # Try lowercase format
+            tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+            # Try uppercase format
+            tool_call_pattern_upper = r'<TOOL_CALL>\s*(.*?)\s*</TOOL_CALL>'
+            
+            # Log what we're looking for
+            logger.info(f"Checking for tool call tags in content. Contains lowercase: {'<tool_call>' in content}, uppercase: {'<TOOL_CALL>' in content}")
+            
+            if '<tool_call>' in content or '<TOOL_CALL>' in content:
+                # Try lowercase first
+                match = re.search(tool_call_pattern, content, re.DOTALL)
+                if not match:
+                    logger.info("Lowercase pattern not found, trying uppercase")
+                    # Try uppercase if lowercase didn't match
+                    match = re.search(tool_call_pattern_upper, content, re.DOTALL)
+                
+                if match:
+                    logger.info("Found tool call match, attempting to parse JSON")
+                    try:
+                        tool_data = json.loads(match.group(1).strip())
+                        logger.info(f"Successfully parsed tool data: {tool_data}")
+                        json_object = GeneratedJsonObject(
+                            name=tool_data.get("name", "unknown_tool"),
+                            object=tool_data.get("arguments", {}),
+                            tool_call_id=str(uuid4())
+                        )
+                        content = None
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse tool call JSON: {e}")
+                        logger.debug(f"Raw matched content: {match.group(1).strip()}")
+
+            # If no tool call found, try parsing as regular JSON
+            if json_object is None and content is not None:
+                logger.info("No tool call found/parsed, attempting regular JSON parsing")
+                if self.completion_kwargs:
+                    name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
+                    logger.info(f"Found schema name from completion_kwargs: {name}")
+                else:
+                    name = None
+                
+                parsed_json = self._parse_json_string(content)
+                if parsed_json:
+                    logger.info("Successfully parsed content as regular JSON")
+                    json_object = GeneratedJsonObject(
+                        name="parsed_content" if name is None else name,
+                        object=parsed_json,
+                        tool_call_id=str(uuid4())
+                    )
+                    content = None
+                else:
+                    logger.warning("Failed to parse content as JSON")
 
         # Extract usage information
         if chat_completion.usage:
+            logger.info("Extracting usage information")
             usage = Usage(
                 model=chat_completion.model,
                 prompt_tokens=chat_completion.usage.prompt_tokens,
@@ -1119,8 +1211,8 @@ class RawOutput(Entity):
                 rejected_prediction_tokens=chat_completion.usage.completion_tokens_details.rejected_prediction_tokens if chat_completion.usage.completion_tokens_details else None,
                 cached_tokens=chat_completion.usage.prompt_tokens_details.cached_tokens if chat_completion.usage.prompt_tokens_details else None
             )
-        logger.info(f"Parsed OpenAI completion: {json_object.name if json_object else None}, {usage}")
-
+        
+        logger.info(f"Parsing complete. Content: {'Present' if content else 'None'}, JSON object: {'Present' if json_object else 'None'}")
         return content, json_object, usage, None
 
     def _parse_anthropic_message(self, message: AnthropicMessage) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:

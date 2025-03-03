@@ -347,7 +347,7 @@ class APIRequest:
         it determines whether to retry based on the remaining attempts and updates the status tracker
         accordingly. Successful requests or final failures are logged to the specified file.
         """
-        logging.info(f"Starting request #{self.task_id}")
+        logging.info(f"Starting request #{self.task_id}, with provider {request_url}")
         error = None
         try:
             # Add the accept header
