@@ -82,6 +82,7 @@ def test_usage_registry_integration():
     
     # Retrieve the usage
     retrieved = Usage.get(usage.ecs_id)
+    assert isinstance(retrieved, Usage)
     assert retrieved is not None
     assert retrieved.model == "gpt-4"
     assert retrieved.prompt_tokens == 100
@@ -133,6 +134,8 @@ def test_usage_fork():
     
     assert original_retrieved is not None
     assert forked_retrieved is not None
+    assert isinstance(original_retrieved, Usage)
+    assert isinstance(forked_retrieved, Usage)
     assert original_retrieved.model == "gpt-4"
     assert forked_retrieved.model == "gpt-4-turbo"
     assert original_retrieved.prompt_tokens == 100

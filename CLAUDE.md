@@ -2,7 +2,8 @@
 
 ## Useful Commands
 - **Build/Install**: `pip install -e .`
-- **Run Tests**: TBD
+- **Run Tests**: `pytest tests/threads_tests --asyncio-mode=auto`
+- **Run Single Test File**: `pytest tests/threads_tests/test_file_name.py -v --asyncio-mode=auto`
 - **Typecheck**: TBD
 - **Lint**: TBD
 
@@ -263,6 +264,58 @@ This matches the type safety focus of the main codebase and ensures the tests ca
 - Cold snapshots vs. warm copies
 
 This approach ensures that we validate the core ECS functionality across different storage backends before tackling the more complex production models.
+
+## Completed Work
+
+### Comprehensive Thread Tests
+We've implemented comprehensive tests for all entity types in the threads module:
+
+1. **Core Entity Tests**:
+   - `ChatThread` - Main conversation manager
+   - `ChatMessage` - Individual messages with different roles
+   - `CallableTool` - Function-based tool execution
+   - `StructuredTool` - Schema-based tool validation
+   - `LLMConfig` - LLM client configuration
+   - `SystemPrompt` - Reusable system prompts
+   - `Usage` - Token usage tracking
+   - `GeneratedJsonObject` - Structured JSON data
+   - `RawOutput` & `ProcessedOutput` - LLM response handling
+
+2. **Integration Tests**:
+   - Workflow management
+   - Tool execution
+   - Message threading
+   - Sequential tool pipelines
+
+### Best Practices Implemented
+
+1. **Modern Timezone-Aware Datetimes**:
+   - Replaced all uses of deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)`
+   - Ensures consistent timezone handling across all timestamps
+
+2. **Updated Pydantic Serialization**:
+   - Migrated from deprecated Pydantic V2 `json_encoders` to modern serialization approach
+   - Using `model_config` with `ser_json_bytes` and `ser_json_timedelta` instead
+   - Better compatibility with latest Pydantic versions
+
+3. **Improved Dependency Handling**:
+   - Enhanced entity dependency graph for better nested entity tracking
+   - Proper cycle detection in entity references
+   - Topological sorting for safe bottom-up processing
+
+4. **Async/Await Support**:
+   - Proper async function handling in entity tracing
+   - Careful management of async context for tool execution
+   - Support for both sync and async workflows
+
+### Code Quality Standards
+
+All code follows these standards:
+1. **Type Safety**: Complete type annotations with proper generics
+2. **Null Safety**: Consistent null checking before attribute access
+3. **Error Handling**: Proper exception propagation and logging
+4. **Testability**: Clean separation of concerns for easier testing
+5. **Documentation**: Clear docstrings and comments
 
 ## Notes
 - Current branch: iri_claude_code_sql_refactor

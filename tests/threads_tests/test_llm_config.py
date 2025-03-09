@@ -64,6 +64,7 @@ def test_llm_config_registry_integration():
     # Retrieve the config
     retrieved = LLMConfig.get(config.ecs_id)
     assert retrieved is not None
+    assert isinstance(retrieved, LLMConfig)
     assert retrieved.client == LLMClient.openai
     assert retrieved.model == "gpt-4"
 

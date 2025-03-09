@@ -247,6 +247,7 @@ def test_raw_output_registry_integration():
     # Retrieve the output
     retrieved = RawOutput.get(raw_output.ecs_id)
     assert retrieved is not None
+    assert isinstance(retrieved, RawOutput)
     assert retrieved.raw_result == raw_output.raw_result
 
 
@@ -411,5 +412,6 @@ def test_processed_output_registry_integration():
     # Retrieve the output
     retrieved = ProcessedOutput.get(processed_output.ecs_id)
     assert retrieved is not None
+    assert isinstance(retrieved, ProcessedOutput)
     assert retrieved.content == "Test content"
     assert retrieved.llm_client == LLMClient.openai

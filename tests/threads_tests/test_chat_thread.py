@@ -35,6 +35,7 @@ class TestChatThreadBasics:
         
         # Verify registration in EntityRegistry
         retrieved = ChatThread.get(thread.ecs_id)
+        assert isinstance(retrieved, ChatThread)
         assert retrieved is not None
         assert retrieved.name == "Test Thread"
     

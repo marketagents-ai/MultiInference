@@ -37,6 +37,7 @@ def test_system_prompt_registry_integration():
     
     # Retrieve the prompt
     retrieved = SystemPrompt.get(prompt.ecs_id)
+    assert isinstance(retrieved, SystemPrompt)
     assert retrieved is not None
     assert retrieved.name == "test_prompt"
     assert retrieved.content == "You are a helpful assistant."
@@ -80,6 +81,8 @@ def test_system_prompt_fork():
     
     assert original_retrieved is not None
     assert forked_retrieved is not None
+    assert isinstance(original_retrieved, SystemPrompt)
+    assert isinstance(forked_retrieved, SystemPrompt)
     assert original_retrieved.name == "original_prompt"
     assert original_retrieved.content == "You are a helpful assistant."
     assert forked_retrieved.name == "modified_prompt"

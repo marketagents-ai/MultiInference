@@ -52,6 +52,7 @@ class TestStructuredTool:
         
         # Verify registration in EntityRegistry
         retrieved_tool = StructuredTool.get(tool.ecs_id)
+        assert isinstance(retrieved_tool, StructuredTool)
         assert retrieved_tool is not None
         assert retrieved_tool.name == "test_response"
     
@@ -165,6 +166,7 @@ class TestStructuredTool:
         assert openai_tool is not None
         assert openai_tool["type"] == "function"
         assert openai_tool["function"]["name"] == tool.name
+        
         assert openai_tool["function"]["description"] == tool.description
         assert openai_tool["function"]["parameters"] == tool.json_schema
     

@@ -58,7 +58,7 @@ async def async_test_function(x: int, y: int) -> int:
 def setup_registry():
     """Setup and teardown for each test."""
     # Make EntityRegistry available in __main__ for Entity methods
-    sys.modules['__main__'].EntityRegistry = EntityRegistry
+    sys.modules['__main__'].EntityRegistry = EntityRegistry # type: ignore
     
     # Use in-memory storage
     storage = InMemoryEntityStorage()
@@ -257,6 +257,8 @@ def processed_output(
     usage: Usage
 ) -> ProcessedOutput:
     """Create a test processed output."""
+    assert raw_output.chat_thread_id is not None
+    assert raw_output.chat_thread_live_id is not None
     output = ProcessedOutput(
         content="This is a test response.",
         usage=usage,
@@ -324,6 +326,8 @@ def tool_processed_output(
         object={"x": 5, "y": 7},
         tool_call_id="call_abc123"
     )
+    assert raw_output.chat_thread_id is not None
+    assert raw_output.chat_thread_live_id is not None
     
     output = ProcessedOutput(
         content="",

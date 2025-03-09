@@ -27,6 +27,7 @@ class TestChatMessage:
         # Verify registration
         retrieved = ChatMessage.get(message.ecs_id)
         assert retrieved is not None
+        assert isinstance(retrieved, ChatMessage)
         assert retrieved.content == message.content
     
     def test_message_to_dict(self):

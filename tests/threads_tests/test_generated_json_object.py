@@ -82,6 +82,8 @@ def test_generated_json_object_registry_integration():
     
     # Retrieve the object
     retrieved = GeneratedJsonObject.get(json_obj.ecs_id)
+    assert isinstance(retrieved, GeneratedJsonObject)
+
     assert retrieved is not None
     assert retrieved.name == "test_object"
     assert retrieved.object == {"key": "value"}
@@ -122,8 +124,9 @@ def test_generated_json_object_fork():
     
     # Check that both objects exist in the registry with different content
     original_retrieved = GeneratedJsonObject.get(original.ecs_id)
+    assert isinstance(original_retrieved, GeneratedJsonObject)
     forked_retrieved = GeneratedJsonObject.get(forked.ecs_id)
-    
+    assert isinstance(forked_retrieved, GeneratedJsonObject)
     assert original_retrieved is not None
     assert forked_retrieved is not None
     assert original_retrieved.name == "original_object"
