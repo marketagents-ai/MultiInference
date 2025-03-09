@@ -317,6 +317,79 @@ All code follows these standards:
 4. **Testability**: Clean separation of concerns for easier testing
 5. **Documentation**: Clear docstrings and comments
 
+## Future Improvements
+
+### 1. Enhanced Entity Tracer
+The `entity_tracer` decorator should be improved to better handle newly created entities:
+
+```python
+# Current behavior only checks if result is an entity that was in arguments:
+if isinstance(result, Entity) and id(result) in entities:
+    return entities[id(result)]
+
+# Should also detect and register new entities that were created inside the function:
+if isinstance(result, Entity) and id(result) not in entities:
+    # Register the new entity if not already registered
+    # Consider auto-registering hierarchies of new entities
+```
+
+This would ensure that new entities created within traced functions are properly tracked and versioned without requiring explicit registration.
+
+### 2. Trace Severity Levels
+Add configurable severity levels to the entity tracing system:
+
+```python
+# Define trace severity enum
+class TraceSeverity(Enum):
+    NONE = 0     # No tracing
+    CRITICAL = 1 # Only trace critical operations (e.g., root entity modifications)
+    NORMAL = 2   # Trace significant operations (default)
+    VERBOSE = 3  # Trace all operations including nested entities
+
+# Enhanced decorator with severity parameter
+def entity_tracer(func=None, *, severity: TraceSeverity = TraceSeverity.NORMAL):
+    # Implementation details...
+```
+
+This would allow global control over tracing granularity through:
+```python
+EntityRegistry.set_trace_severity(TraceSeverity.VERBOSE)  # More detailed tracing
+EntityRegistry.set_trace_severity(TraceSeverity.CRITICAL) # Minimal tracing for production
+```
+
+### 3. Logging System Overhaul
+Implement a comprehensive logging system following best practices:
+
+1. **Centralized Logger Configuration**:
+   ```python
+   class LogManager:
+       _instance = None
+       _handlers = {}
+       _log_level = logging.INFO
+       
+       @classmethod
+       def configure(cls, level=logging.INFO, log_file=None, max_size=10*1024*1024):
+           cls._log_level = level
+           # Configure handlers, formatters, etc.
+   ```
+
+2. **Memory-Efficient Logging**:
+   - Implement log rotation with configurable retention
+   - Add methods to clear logs to save memory
+   - Support streaming to external systems
+
+3. **Context-Aware Logging**:
+   - Add entity ID and operation context to log records
+   - Support structured logging for better searchability
+   - Add correlation IDs for tracing operations across the system
+
+4. **Integration with Entity System**:
+   - Log important entity lifecycle events
+   - Track entity lineage through logs
+   - Support debugging complex relationships
+
+This would provide better visibility into system behavior while maintaining good performance.
+
 ## Notes
 - Current branch: iri_claude_code_sql_refactor
 - Main branch: main
