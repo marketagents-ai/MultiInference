@@ -5,7 +5,7 @@ This module defines the base registry class that implements common features like
 logging, timestamps, and basic registry operations.
 """
 from typing import Dict, Any, Optional, Generic, TypeVar, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from io import StringIO
 from uuid import UUID
@@ -72,7 +72,7 @@ class BaseRegistry(Generic[T]):
     @classmethod
     def _record_timestamp(cls, key: Union[str, UUID]) -> None:
         """Record timestamp for an operation."""
-        cls._timestamps[key] = datetime.utcnow()
+        cls._timestamps[key] = datetime.now(timezone.utc)
 
     @classmethod
     def get_timestamp(cls, key: Union[str, UUID]) -> Optional[datetime]:

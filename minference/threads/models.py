@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, model_validator, computed_field, ValidationInfo, AfterValidator
 from pathlib import Path
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import inspect
 from jsonschema import validate
 from openai.types.chat import ChatCompletionToolParam
@@ -379,18 +379,23 @@ class CallableTool(Entity):
             )
         return None
         
-    def fork(self: T_Self, **kwargs: Any) -> T_Self:
+    def fork(self: T_Self) -> T_Self:
         """
         Override fork to preserve schemas when creating new versions.
+        
+        Note: We can't use **kwargs with the parent Entity.fork() method
+        as it doesn't accept keyword arguments. Instead, we fork first
+        and then update the schemas afterward.
         """
-        # Preserve schemas if not explicitly changed
-        if 'input_schema' not in kwargs:
-            kwargs['input_schema'] = self.input_schema
-        if 'output_schema' not in kwargs:
-            kwargs['output_schema'] = self.output_schema
+        # Call parent fork without kwargs
+        forked_entity = super().fork()
+        
+        # Preserve schemas in the forked entity
+        forked_entity.input_schema = self.input_schema
+        forked_entity.output_schema = self.output_schema
             
-        # Call parent fork with preserved schemas and cast return type
-        return cast(T_Self, super().fork(**kwargs))
+        # Return the properly typed forked entity
+        return cast(T_Self, forked_entity)
 
 class StructuredTool(Entity):
     """
@@ -667,7 +672,7 @@ class ChatMessage(Entity):
     """A chat message entity using chatml format."""
     
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the message was created"
     )
     
@@ -730,11 +735,9 @@ class ChatMessage(Entity):
     )
 
 
-    @property
     @computed_field
-    def is_root(self) -> bool:
-
-        """Check if this is a root message (no parent)."""
+    def is_conversation_root(self) -> bool:
+        """Check if this is a root message (no parent) in the conversation."""
         return self.parent_message_uuid is None
 
     def get_parent(self) -> Optional['ChatMessage']:

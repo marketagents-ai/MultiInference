@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Literal, Any, TypeVar, Type, cast, Protocol, runtime_checkable
 from uuid import UUID, uuid4
+from datetime import timezone
 import json
 
 # Setup logging
@@ -134,7 +135,7 @@ class Task(Entity):
 class Comment(Entity):
     """Entity that can reference another entity."""
     content: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     author: Optional[Person] = None
 
 
