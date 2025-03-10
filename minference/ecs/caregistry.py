@@ -66,6 +66,7 @@ class CallableRegistry(BaseRegistry[Callable]):
     """Global registry for tool callables"""
     _registry: Dict[str, Callable] = {}  # Add explicit type annotation
     _timestamps: Dict[str, float] = {}   # Add explicit type annotation
+    _logger = __import__('logging').getLogger("CallableRegistry")
     
     @classmethod
     def register(cls, name: str, func: Callable) -> None:

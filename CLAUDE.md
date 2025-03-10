@@ -135,15 +135,175 @@ The planned refactoring will:
 - Use proper association tables for many-to-many relationships
 - Add polymorphic entity support for tool implementations
 
-## Current Development: Systematic Testing
+## Current Implementation Status
 
-We are implementing a systematic testing approach to ensure a smooth migration from SQLModel to pure SQLAlchemy:
+We have implemented a pure SQLAlchemy-based storage backend with the following components:
 
-### Testing Strategy
+1. **EntityBase**: Abstract base class for all entity tables with common columns for versioning
+2. **BaseEntitySQL**: Generic fallback table for storing entities without specific models
+3. **SqlEntityStorage**: Main storage implementation that provides all operations required by the EntityStorage protocol
+
+### Key Accomplishments
+
+1. **Complete SQLAlchemy Implementation**: We've created a full implementation of the EntityStorage protocol using pure SQLAlchemy ORM with modern typing features.
+
+2. **Entity-ORM Mapping System**: We've designed a flexible system that maps entity classes to their corresponding ORM models:
+   - Explicit mapping provided at initialization for type safety
+   - Inheritance-aware mapping that finds the most specific ORM model
+   - Memory-efficient caching for repeated lookups
+
+3. **Relationship Handling**: We've implemented support for all relationship types:
+   - One-to-one relationships (via direct foreign keys)
+   - One-to-many relationships (via collections)
+   - Many-to-many relationships (via association tables)
+   - Self-referential relationships
+   
+4. **Test Entity Models**: We've created test entities and corresponding ORM models that showcase the different relationship patterns:
+   - SimpleEntity - Basic entity with primitive fields
+   - NestedEntity - Entity containing another entity
+   - ParentEntity/ChildEntity - Many-to-many relationship
+   - ComplexEntity - Entity with multiple relationship types
+
+5. **Comprehensive Testing**: We've developed tests that verify:
+   - Roundtrip conversion (Entity→ORM→Entity)
+   - Entity identity preservation
+   - Relationship integrity
+   - Hierarchical storage and retrieval
+
+### Current Issues and Challenges
+
+1. **UUID Serialization**: The main issue is with UUID serialization in the JSON column. We need to convert UUID objects to strings before storing them in the database:
+   ```
+   TypeError: Object of type UUID is not JSON serializable
+   ```
+
+2. **Database vs Entity IDs**: We need to clearly separate database row IDs (auto-incrementing integers) from entity versioning UUIDs. The current implementation properly creates separate IDs but needs better handling during serialization.
+
+3. **Table Name Management**: Table names need to be explicitly declared in each ORM model class to avoid SQLAlchemy conflicts.
+
+4. **Relationship Complexity**: Managing different types of relationships (one-to-one, one-to-many, many-to-many) requires careful implementation of relationship handling methods on each ORM model.
+
+### Technical Recommendations for UUID Serialization
+
+We need to fix the UUID serialization issue that's causing the test failures. There are three main approaches:
+
+1. **Custom JSON Serializer for SQLAlchemy**:
+   ```python
+   import json
+   from uuid import UUID
+   
+   # Custom JSON serializer that handles UUIDs
+   class UUIDEncoder(json.JSONEncoder):
+       def default(self, obj):
+           if isinstance(obj, UUID):
+               return str(obj)
+           return super().default(obj)
+   
+   # Use this encoder with SQLAlchemy
+   from sqlalchemy.dialects.postgresql import JSON as PostgresJSON
+   
+   # Define JSON column with custom serializer
+   old_ids = mapped_column(PostgresJSON(none_as_null=True), 
+                         default=list, 
+                         nullable=False,
+                         info={"serialize_json": lambda obj: json.dumps(obj, cls=UUIDEncoder)})
+   ```
+
+2. **Type Conversion in from_entity Method**:
+   ```python
+   @classmethod
+   def from_entity(cls, entity: Entity) -> 'EntityBaseSQL':
+       # Convert UUID lists to string lists
+       str_old_ids = [str(uid) for uid in entity.old_ids]
+       
+       return cls(
+           ecs_id=entity.ecs_id,
+           lineage_id=entity.lineage_id,
+           parent_id=entity.parent_id,
+           created_at=entity.created_at,
+           old_ids=str_old_ids,  # Store as strings
+           # ... other fields
+       )
+   ```
+
+3. **TypeDecorator for UUID Lists**:
+   ```python
+   from sqlalchemy.types import TypeDecorator, VARCHAR
+   
+   class UUIDList(TypeDecorator):
+       """Convert between Python UUID list and SQL JSON string."""
+       impl = VARCHAR
+       cache_ok = True
+       
+       def process_bind_param(self, value, dialect):
+           if value is None:
+               return '[]'
+           return json.dumps([str(val) for val in value])
+           
+       def process_result_value(self, value, dialect):
+           if value is None:
+               return []
+           return [UUID(val) for val in json.loads(value)]
+   ```
+
+The second approach is likely the simplest and most effective for our specific use case, as it keeps the serialization logic in the explicit conversion methods.
+
+### Next Steps
+
+1. Implement the UUID serialization fix in the ORM models
+2. Improve type safety in the SqlEntityStorage class, particularly for the _get_orm_class method
+3. Complete the test suite to cover all core operations:
+   - Basic entity storage and retrieval ✓
+   - Nested entity relationships ✓
+   - Many-to-many relationships ✓
+   - Entity modification and versioning (fix needed)
+   - Querying by type ✓
+   - Batch operations ✓
+
+4. Integrate the implementation with the main codebase by replacing the SQLModel-based storage
+5. Evaluate performance with larger datasets and optimize as needed
+
+## Current Development: SQLAlchemy Migration
+
+We are implementing a migration from SQLModel to pure SQLAlchemy ORM for the entity storage system:
+
+### Migration Strategy
 1. **Start with in-memory tests**: Create a comprehensive test suite for the in-memory implementation first
 2. **Define relationship patterns**: Systematically test all relationship types (one-to-one, one-to-many, many-to-many, hierarchical)
 3. **Develop SQLAlchemy backend**: Once in-memory tests pass, implement and test the SQLAlchemy backend against the same test suite
 4. **Apply to production models**: Refactor the production models based on proven patterns from the test suite
+
+### Current Progress
+We have now implemented both parts of the SQLAlchemy migration:
+
+1. **Entity Storage System**: We've completed the base Entity storage system using SQLAlchemy's ORM with proper UUID handling using SQLAlchemy's built-in `Uuid` type and JSON serialization.
+
+2. **Thread System Models**: We've created a complete set of SQLAlchemy ORM models for all Thread system entities:
+   - ChatThread with messages, system prompt, LLM config, and tools
+   - ChatMessage with parent-child relationships and usage tracking
+   - Tools with polymorphic inheritance (CallableTool and StructuredTool)
+   - All other supporting entities (Usage, GeneratedJsonObject, etc.)
+
+The implementation uses:
+- Proper SQL table structure with appropriate column types
+- Polymorphic inheritance through a discriminator column
+- Many-to-many relationships with association tables
+- Self-referential relationships for message threading
+- Renamed fields to avoid conflicts with SQLAlchemy reserved words
+
+### Testing
+We have built a comprehensive test suite that verifies:
+1. **Table Structure**: Testing that all tables and columns are created correctly
+2. **Basic CRUD**: Creating, querying, and modifying entities
+3. **Relationship Loading**: Loading complex entity graphs with eager loading
+4. **Many-to-Many Associations**: Thread-to-Tool associations with proper loading
+5. **Polymorphic Inheritance**: Tool hierarchy with specialized fields
+
+### Next Steps
+1. Integrate the SQLAlchemy models with the EntityRegistry to enable storage and retrieval through the existing API
+2. Add SQL-specific storage operations for optimized queries
+3. Create migration tools to convert existing SQLModel-based data
+4. Update existing tests to work with both storage backends
 
 ### Test Location
 Tests are being developed in the `/tests/ecs_tests/` directory with:
@@ -151,6 +311,36 @@ Tests are being developed in the `/tests/ecs_tests/` directory with:
 - `conftest.py`: Test fixtures and mock entity classes 
 - `test_basic_operations.py`: Tests for basic entity functionality
 - `test_relationships.py`: Tests for entity relationships and change propagation
+
+### SQLAlchemy Implementation
+The SQLAlchemy implementation in `/tests/sql/sql_entity.py` provides a clean replacement for the current SQLModel-based approach with these key features:
+
+1. **Pure SQLAlchemy Base Classes**:
+   - `Base`: Standard SQLAlchemy declarative base
+   - `EntityBase`: Abstract base with common entity fields
+   - `BaseEntitySQL`: Fallback table for generic entities
+
+2. **Type-Safe Relationship Handling**:
+   - Association tables for many-to-many relationships
+   - Proper relationship declarations with SQLAlchemy's relationship() function
+   - Clear separation between entity and database models
+
+3. **Identical API Behavior**:
+   - The SQLAlchemy implementation maintains the same API as the in-memory storage
+   - All methods have the same signatures and behaviors
+   - This ensures a seamless transition for existing code
+
+4. **Entity Conversion**:
+   - `to_entity()`: Converts from SQLAlchemy models to Pydantic entities
+   - `from_entity()`: Converts from Pydantic entities to SQLAlchemy models
+   - Proper type annotation and casting throughout
+
+5. **Performance Optimizations**:
+   - Efficient querying with proper join conditions
+   - Session reuse for related operations
+   - Two-phase entity storage (entities first, then relationships)
+
+The implementation is structured to maintain identical behavior to the in-memory storage while providing the benefits of SQLAlchemy's robust ORM capabilities. This ensures that the entity versioning system works consistently regardless of which storage backend is in use.
 
 ### Type Safety Approach
 
