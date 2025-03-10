@@ -91,6 +91,7 @@ class ChatThreadSQL(EntityBase):
     # ChatThread specific fields
     title = mapped_column(String(255), nullable=True)  # maps to 'name' in ChatThread entity
     thread_metadata = mapped_column(JSON, nullable=True)  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
+    workflow_step = mapped_column(Integer, nullable=True)  # Added workflow_step field
     
     __mapper_args__ = {
         "polymorphic_identity": "chat_thread",
@@ -134,6 +135,7 @@ class ChatThreadSQL(EntityBase):
             llm_config=llm_config,
             tools=tools,
             history=history,  # Add the converted messages
+            workflow_step=self.workflow_step,  # Include workflow_step
             from_storage=True
         )
     
@@ -150,6 +152,7 @@ class ChatThreadSQL(EntityBase):
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Use string representation for JSON serialization
             title=entity.name,
+            workflow_step=entity.workflow_step,  # Include workflow_step
             entity_type="chat_thread"  # Required field
         )
         
