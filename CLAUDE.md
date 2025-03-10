@@ -329,11 +329,14 @@ During our SQL testing implementation, we've successfully fixed several key issu
 1. **Explicit Registration**: Unlike in-memory tests, SQL tests require explicit calls to `EntityRegistry.register(entity)` to ensure entities are stored in the SQL database. This is especially important when creating entities that will be referenced by other entities.
 
 2. **Field Name Differences**: The SQL models use different field names in some cases:
-   - `docstring` is stored as `description` in the StructuredTool SQL models
-   - `input_schema` in StructuredTool is `json_schema` 
+   - `docstring` is used in CallableTool but StructuredTool uses `description` instead
+   - `json_schema` is used in StructuredTool while `input_schema` is used in CallableTool
    - In ProcessedOutput, `text_content` is `content` and `json_content` is `json_object`
    - In RawOutput, `content` is `raw_result`
+   - In LLMConfig, `client` maps to `provider_name` in SQL models
    - All entity creation must include all required fields, which may differ between models
+   
+   **IMPORTANT**: When writing tests, be very careful to use the correct field name for each entity type. For example, test_schema_modification was failing because it tried to use `docstring` on a StructuredTool, but StructuredTool uses `description` instead.
 
 3. **Database Setup**: SQL tests require careful setup of the database tables, including:
    - Creating the `baseentitysql` table explicitly with the right field types
@@ -379,18 +382,29 @@ We have successfully implemented and fixed tests for:
    - Message role conversion ✅
    - Thread-message relationships ✅
 
-We still need to implement:
+4. **SQL Output Entity Tests** (9/9 passing):
+   - RawOutput creation and storage ✅
+   - OpenAI response format parsing ✅
+   - OpenAI tool call format parsing ✅
+   - JSON content parsing ✅
+   - Anthropic response format parsing ✅
+   - Anthropic tool format parsing ✅
+   - ProcessedOutput creation with relationships ✅
+   - ProcessedOutput from RawOutput ✅
+   - ProcessedOutput with error handling ✅
 
-2. **SQL Modification Detection Tests**:
-   - Entity versioning tests ⏳
-   - Entity forking with relationships ⏳
-   - Lineage tracking ⏳
-
-3. **SQL Output Entity Tests**:
-   - RawOutput creation and parsing ⏳
-   - ProcessedOutput creation and relationships ⏳
-   - JSON content extraction ⏳
-   - Usage statistics tracking ⏳
+5. **SQL Modification Detection Tests** (11/11 passing):
+   - Simple modification detection ✅ 
+   - Sub-entity modification detection ✅
+   - Entity forking ✅
+   - Sub-entity forking ✅
+   - Direct message versioning ✅
+   - Thread modification ✅
+   - Schema modification ✅
+   - Simple entity modification ✅
+   - Entity tracer decorator ✅
+   - Lineage tracking ✅
+   - Subentity modifications ✅
 
 4. **SQL Thread Operations Tests**:
    - Thread with system prompt ⏳
@@ -409,14 +423,14 @@ To achieve parity with the in-memory tests (threads_tests), we need to implement
    - Test message with usage statistics
    - Test message thread relationships
 
-2. **test_thread_sql_output.py**:
+2. ✅ **test_thread_sql_output.py**:
    - Test RawOutput creation and storage
    - Test parsing of different response formats (OpenAI, Anthropic)
    - Test ProcessedOutput creation and relationships
    - Test JSON content extraction and validation
    - Test usage statistics tracking
 
-3. **test_thread_sql_versioning.py**:
+3. ✅ **test_thread_sql_versioning.py**:
    - Test entity modification detection
    - Test entity forking process
    - Test lineage tracking
@@ -812,20 +826,34 @@ We've made significant progress on SQL test coverage, specifically:
    - Implemented proper SQL message relationship testing patterns
    - All message relationship tests are now passing
 
-2. **Documented SQL Testing Best Practices**:
+2. **Added Comprehensive Output Entity Tests**:
+   - Created `test_thread_sql_output.py` with 9 output entity tests
+   - Implemented tests for both OpenAI and Anthropic response formats
+   - Added tests for tool calls, JSON content parsing, and error handling
+   - All output entity tests are now passing
+
+3. **Added Comprehensive Versioning Tests**:
+   - Created and debugged `test_thread_sql_versioning.py` with 11 tests
+   - Implemented tests for modification detection, entity forking, and lineage tracking
+   - Fixed field name mismatch between StructuredTool and SQL models (description vs docstring)
+   - All 11 versioning tests are now passing
+
+4. **Documented SQL Testing Best Practices**:
    - Added detailed guidelines for using EntityRegistry in tests
    - Documented the proper approach for entity creation and retrieval
    - Created code examples for SQL relationship verification
 
-3. **Fixed Critical Testing Issues**:
+5. **Fixed Critical Testing Issues**:
    - Resolved the Entity.get() issue by adding EntityRegistry to __main__
    - Fixed the UUID serialization pattern for proper storage
    - Implemented correct entity relationship tracking
+   - Fixed field name inconsistencies between entity models and SQL models
 
-4. **Total SQL Test Coverage**:
-   - 52 passing SQL tests across 10 test files
+6. **Total SQL Test Coverage**:
+   - 72 passing SQL tests across all test files
    - All ECS core tests passing
    - All Threads tests passing
+   - All versioning tests passing
 
 ### Next Priority
-The next priority is to implement `test_thread_sql_output.py` to test the output entities (RawOutput and ProcessedOutput) with SQL storage, followed by versioning tests with `test_thread_sql_versioning.py`.
+The next priority is to implement `test_thread_sql_config.py` to test LLM configuration options with SQL storage.
