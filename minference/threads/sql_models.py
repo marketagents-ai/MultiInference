@@ -93,6 +93,17 @@ class ChatThreadSQL(EntityBase):
     thread_metadata = mapped_column(JSON, nullable=True)  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
     workflow_step = mapped_column(Integer, nullable=True)  # Added workflow_step field
     
+    # Added missing fields
+    new_message = mapped_column(Text, nullable=True)
+    prefill = mapped_column(Text, nullable=True, default="Here's the valid JSON object response:```json")
+    postfill = mapped_column(Text, nullable=True, default="\n\nPlease provide your response in JSON format.")
+    use_schema_instruction = mapped_column(Boolean, nullable=False, default=False)
+    use_history = mapped_column(Boolean, nullable=False, default=True)
+    
+    # Forced output entity reference
+    forced_output_id = mapped_column(Uuid, ForeignKey("tool.ecs_id"), nullable=True)
+    forced_output = relationship("ToolSQL")
+    
     __mapper_args__ = {
         "polymorphic_identity": "chat_thread",
     }
@@ -103,6 +114,7 @@ class ChatThreadSQL(EntityBase):
         system_prompt = self.system_prompt.to_entity() if self.system_prompt else None
         llm_config = self.llm_config.to_entity() if self.llm_config else None
         tools = [tool.to_entity() for tool in self.tools] if self.tools else []
+        forced_output = self.forced_output.to_entity() if self.forced_output else None
         
         # Make sure we have a valid LLMConfig (required)
         if llm_config is None:
@@ -135,7 +147,13 @@ class ChatThreadSQL(EntityBase):
             llm_config=llm_config,
             tools=tools,
             history=history,  # Add the converted messages
-            workflow_step=self.workflow_step,  # Include workflow_step
+            workflow_step=self.workflow_step,
+            new_message=self.new_message,
+            prefill=self.prefill,
+            postfill=self.postfill,
+            use_schema_instruction=self.use_schema_instruction,
+            use_history=self.use_history,
+            forced_output=forced_output,
             from_storage=True
         )
     
@@ -152,7 +170,13 @@ class ChatThreadSQL(EntityBase):
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Use string representation for JSON serialization
             title=entity.name,
-            workflow_step=entity.workflow_step,  # Include workflow_step
+            workflow_step=entity.workflow_step,
+            new_message=entity.new_message,
+            prefill=entity.prefill,
+            postfill=entity.postfill,
+            use_schema_instruction=entity.use_schema_instruction,
+            use_history=entity.use_history,
+            forced_output_id=entity.forced_output.ecs_id if entity.forced_output else None,
             entity_type="chat_thread"  # Required field
         )
         
@@ -181,6 +205,18 @@ class ChatThreadSQL(EntityBase):
                 ).first()
                 if llm_config:
                     self.llm_config = llm_config
+                    
+        # Handle forced_output relationship
+        if entity.forced_output:
+            if entity.forced_output.ecs_id in orm_objects:
+                self.forced_output = orm_objects[entity.forced_output.ecs_id]
+            else:
+                # Try to find in database
+                forced_output = session.query(ToolSQL).filter(
+                    ToolSQL.ecs_id == entity.forced_output.ecs_id
+                ).first()
+                if forced_output:
+                    self.forced_output = forced_output
                     
         # Handle tools relationship (many-to-many)
         if entity.tools:
@@ -397,6 +433,11 @@ class LLMConfigSQL(EntityBase):
     response_format = mapped_column(JSON, nullable=True)
     llm_config = mapped_column(JSON, nullable=True)  # Stores additional config
     
+    # Added missing fields
+    use_cache = mapped_column(Boolean, nullable=False, default=True)
+    reasoner = mapped_column(Boolean, nullable=False, default=False)
+    reasoning_effort = mapped_column(String(20), nullable=False, default="medium")
+    
     __mapper_args__ = {
         "polymorphic_identity": "llm_config",
     }
@@ -421,6 +462,9 @@ class LLMConfigSQL(EntityBase):
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             response_format=response_format_value or ResponseFormat.text,
+            use_cache=self.use_cache,
+            reasoner=self.reasoner,
+            reasoning_effort=self.reasoning_effort,
             from_storage=True
         )
     
@@ -441,6 +485,9 @@ class LLMConfigSQL(EntityBase):
             max_tokens=entity.max_tokens,
             temperature=entity.temperature,
             response_format=entity.response_format.value,  # Store enum value
+            use_cache=entity.use_cache,
+            reasoner=entity.reasoner,
+            reasoning_effort=entity.reasoning_effort,
             entity_type="llm_config"  # Required field
         )
 
@@ -618,6 +665,15 @@ class UsageSQL(EntityBase):
     total_tokens = mapped_column(Integer, nullable=True)
     model = mapped_column(String(100), nullable=True)
     
+    # Added missing fields for various token tracking
+    cache_creation_input_tokens = mapped_column(Integer, nullable=True)
+    cache_read_input_tokens = mapped_column(Integer, nullable=True)
+    accepted_prediction_tokens = mapped_column(Integer, nullable=True)
+    audio_tokens = mapped_column(Integer, nullable=True)
+    reasoning_tokens = mapped_column(Integer, nullable=True)
+    rejected_prediction_tokens = mapped_column(Integer, nullable=True)
+    cached_tokens = mapped_column(Integer, nullable=True)
+    
     __mapper_args__ = {
         "polymorphic_identity": "usage",
     }
@@ -634,6 +690,13 @@ class UsageSQL(EntityBase):
             prompt_tokens=self.prompt_tokens or 0,
             completion_tokens=self.completion_tokens or 0,
             total_tokens=self.total_tokens or 0,
+            cache_creation_input_tokens=self.cache_creation_input_tokens,
+            cache_read_input_tokens=self.cache_read_input_tokens,
+            accepted_prediction_tokens=self.accepted_prediction_tokens,
+            audio_tokens=self.audio_tokens,
+            reasoning_tokens=self.reasoning_tokens,
+            rejected_prediction_tokens=self.rejected_prediction_tokens,
+            cached_tokens=self.cached_tokens,
             from_storage=True
         )
     
@@ -653,6 +716,13 @@ class UsageSQL(EntityBase):
             prompt_tokens=entity.prompt_tokens,
             completion_tokens=entity.completion_tokens,
             total_tokens=entity.total_tokens,
+            cache_creation_input_tokens=entity.cache_creation_input_tokens,
+            cache_read_input_tokens=entity.cache_read_input_tokens,
+            accepted_prediction_tokens=entity.accepted_prediction_tokens,
+            audio_tokens=entity.audio_tokens,
+            reasoning_tokens=entity.reasoning_tokens,
+            rejected_prediction_tokens=entity.rejected_prediction_tokens,
+            cached_tokens=entity.cached_tokens,
             entity_type="usage"  # Required field
         )
 
@@ -665,6 +735,7 @@ class GeneratedJsonObjectSQL(EntityBase):
     obj_schema = mapped_column(JSON, nullable=True)  # Maps to 'schema' in Entity
     obj_name = mapped_column(String(255), nullable=True)  # Maps to 'name' in Entity
     obj_object = mapped_column(JSON, nullable=True)  # Maps to 'object' in Entity
+    tool_call_id = mapped_column(String(255), nullable=True)  # Added missing field
     
     __mapper_args__ = {
         "polymorphic_identity": "generated_json_object",
@@ -680,6 +751,7 @@ class GeneratedJsonObjectSQL(EntityBase):
             old_ids=self.old_ids,
             name=self.obj_name or "unnamed",
             object=self.obj_object or {},
+            tool_call_id=self.tool_call_id,
             from_storage=True
         )
     
@@ -697,6 +769,7 @@ class GeneratedJsonObjectSQL(EntityBase):
             old_ids=str_old_ids,  # Use string representation for JSON serialization
             obj_name=entity.name,
             obj_object=entity.object,
+            tool_call_id=entity.tool_call_id,
             obj_data={},  # Default value since current entity doesn't have this
             entity_type="generated_json_object"  # Required field
         )

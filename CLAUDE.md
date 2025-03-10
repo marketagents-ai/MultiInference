@@ -356,6 +356,52 @@ During our SQL testing implementation, we've successfully fixed several key issu
    - Register entities in the right dependency order
    - Use try/except blocks to handle differences in validation behavior
 
+### CRITICAL WARNING: Entity-SQL Field Synchronization
+
+⚠️ **IMPORTANT**: When implementing or modifying entities, it is **CRITICAL** to ensure that all fields are properly synchronized between the Pydantic Entity models and their corresponding SQL models!
+
+When an Entity property is missing from the SQL model:
+1. The field value will be **SILENTLY LOST** when storing to the database
+2. Default values will be returned when retrieving from storage
+3. Entity versioning will **FAIL** to detect changes to these fields
+4. Field changes will NOT be preserved across application sessions
+
+We identified and fixed this critical issue with the `LLMConfig` entity where:
+- `use_cache` was silently defaulting to `True` even when set to `False`
+- `reasoner` was silently defaulting to `False` even when set to `True`
+- `reasoning_effort` was not being persisted at all
+
+**Common field synchronization issues to watch for:**
+1. Missing fields in SQL models that exist in Entity models
+2. Renamed fields between SQL and Entity models (`description` vs `docstring`)
+3. Field name prefixing in SQL models (`obj_name` instead of just `name`)
+4. Silent fallback to default values when fields are missing
+
+**Known field mapping inconsistencies:**
+
+| Entity Model | Entity Field | SQL Model | SQL Field |
+|--------------|--------------|-----------|-----------|
+| LLMConfig | client | LLMConfigSQL | provider_name |
+| LLMConfig | - | LLMConfigSQL | provider_api_key (extra) |
+| ChatThread | name | ChatThreadSQL | title |
+| SystemPrompt | name | SystemPromptSQL | prompt_name |
+| SystemPrompt | - | SystemPromptSQL | prompt_description (extra) |
+| CallableTool | docstring | ToolSQL | tool_description |
+| CallableTool | input_schema | ToolSQL | tool_parameters_schema |
+| StructuredTool | description | ToolSQL | tool_description |
+| StructuredTool | json_schema | StructuredToolSQL | tool_output_schema |
+| GeneratedJsonObject | name | GeneratedJsonObjectSQL | obj_name |
+| GeneratedJsonObject | object | GeneratedJsonObjectSQL | obj_object |
+| GeneratedJsonObject | - | GeneratedJsonObjectSQL | obj_data (extra) |
+| RawOutput | content | RawOutputSQL | raw_result |
+
+When adding or modifying fields, always:
+1. Add the field to **BOTH** the entity model and its SQL counterpart
+2. Update the `to_entity()` and `from_entity()` methods to handle the field
+3. Ensure tests actually verify persistence of field values (not just defaults)
+4. Test modification detection to ensure fields trigger proper versioning
+5. Document any field name mapping in the SQL model class comment
+
 ### Current Testing Status
 
 We have successfully implemented and fixed tests for:
@@ -406,7 +452,17 @@ We have successfully implemented and fixed tests for:
    - Lineage tracking ✅
    - Subentity modifications ✅
 
-4. **SQL Thread Operations Tests**:
+6. **SQL Config Tests** (8/8 passing):
+   - Basic LLMConfig storage and retrieval ✅
+   - LLMConfig with all options ✅
+   - Different LLM clients ✅ 
+   - Default values ✅
+   - Response format validation ✅
+   - Reasoner validation ✅
+   - LLMConfig in ChatThread ✅
+   - Updating LLMConfig ✅
+
+7. **SQL Thread Operations Tests**:
    - Thread with system prompt ⏳
    - Message conversion (various formats) ⏳
    - Thread configuration options ⏳
@@ -437,10 +493,13 @@ To achieve parity with the in-memory tests (threads_tests), we need to implement
    - Test version history retrieval
    - Test relationship preservation during versioning
 
-4. **test_thread_sql_config.py**:
+4. ✅ **test_thread_sql_config.py**:
    - Test LLMConfig creation and storage
    - Test response format validation
    - Test model configuration options
+   - Test default parameter values
+   - Test different LLM client types
+   - Test LLMConfig in ChatThread context
    - Test SystemPrompt integration
 
 The implementation approach should be:
@@ -838,22 +897,85 @@ We've made significant progress on SQL test coverage, specifically:
    - Fixed field name mismatch between StructuredTool and SQL models (description vs docstring)
    - All 11 versioning tests are now passing
 
-4. **Documented SQL Testing Best Practices**:
+4. **Added LLMConfig SQL Tests**:
+   - Created `test_thread_sql_config.py` with 8 tests
+   - Implemented tests for LLM client types, response format validation, and config options
+   - Added missing fields (use_cache, reasoner, reasoning_effort) to LLMConfigSQL model
+   - Fixed SQL schema to properly preserve all configuration settings
+   - All 8 LLMConfig tests now passing
+
+5. **Documented SQL Testing Best Practices**:
    - Added detailed guidelines for using EntityRegistry in tests
    - Documented the proper approach for entity creation and retrieval
    - Created code examples for SQL relationship verification
 
-5. **Fixed Critical Testing Issues**:
+6. **Fixed Critical Testing Issues**:
    - Resolved the Entity.get() issue by adding EntityRegistry to __main__
    - Fixed the UUID serialization pattern for proper storage
    - Implemented correct entity relationship tracking
    - Fixed field name inconsistencies between entity models and SQL models
+   - Fixed missing fields in SQL models by adding support for all entity attributes
 
-6. **Total SQL Test Coverage**:
-   - 72 passing SQL tests across all test files
+7. **Total SQL Test Coverage**:
+   - 80 passing SQL tests across all test files
    - All ECS core tests passing
-   - All Threads tests passing
+   - All Thread tests passing
    - All versioning tests passing
+   - All config tests passing
 
-### Next Priority
-The next priority is to implement `test_thread_sql_config.py` to test LLM configuration options with SQL storage.
+8. **Critical Bug Fixes**:
+   - Fixed a critical bug where `LLMConfig` fields were missing in SQL models
+   - Added missing `use_cache`, `reasoner`, and `reasoning_effort` fields
+   - Added comprehensive documentation of Entity-SQL field mappings
+   - Added warnings about field sync issues throughout the codebase
+   - Identified similar issues in other entity models
+
+### Next Priorities
+1. Implement `test_thread_sql_operations.py` to test more advanced thread operations with SQL storage
+2. ✅ Review all SQL models for missing fields identified in our analysis
+3. Create more detailed tests to ensure entity fields are properly persisted in SQL
+4. Ensure all field name differences are properly documented in code and tests
+
+### Fixed Missing Fields in SQL Models
+We identified and fixed several missing fields in the SQL models:
+
+1. **UsageSQL**
+   - Added missing fields: `cache_creation_input_tokens`, `cache_read_input_tokens`, `accepted_prediction_tokens`, `audio_tokens`, `reasoning_tokens`, `rejected_prediction_tokens`, `cached_tokens`
+   - Updated to_entity() and from_entity() methods to properly handle these fields
+
+2. **GeneratedJsonObjectSQL**
+   - Added missing field: `tool_call_id`
+   - Updated conversion methods to properly preserve this field during storage and retrieval
+
+3. **ChatThreadSQL**
+   - Added missing fields: `new_message`, `prefill`, `postfill`, `use_schema_instruction`, `use_history`
+   - Added relationship field: `forced_output` with proper foreign key
+   - Updated handle_relationships method to properly handle the forced_output relationship
+   - Updated to_entity() and from_entity() methods to properly handle all new fields
+
+### Tests to Review for Field Mapping Workarounds
+
+Now that we've fixed the missing fields in the SQL models, we should review these tests for workarounds or indirect assertions that might be hiding issues:
+
+1. **Usage Token Fields Tests**
+   - `tests/sql/test_thread_sql_output.py` - Check for assertions about token counts
+   - `tests/sql/test_thread_model_conversion.py` - Look for Usage entity conversion tests
+   - Any other tests that create a Usage entity with the previously missing token fields
+
+2. **GeneratedJsonObject's tool_call_id Tests**
+   - `tests/sql/test_thread_sql_tools.py` - Check for assertions about tool_call_id preservation
+   - `tests/sql/test_thread_sql_output.py` - Look for tests that verify tool calls in output
+
+3. **ChatThread Field Tests**
+   - `tests/sql/test_thread_sql_basic.py` - Check for prefill/postfill handling
+   - `tests/sql/test_thread_sql_messages.py` - Check for use_history assertions
+   - `tests/sql/test_thread_sql_tools.py` - Look for forced_output handling
+
+4. **Specific Patterns to Look For**:
+   - Tests that check default values instead of explicitly set values
+   - Tests that create but never validate certain fields
+   - Try/except blocks that might be hiding conversion errors
+   - Debug prints suggesting field access issues
+   - Comments mentioning workarounds for SQL limitations
+
+These should be reviewed by the next Claude instance with full context of all tests.
