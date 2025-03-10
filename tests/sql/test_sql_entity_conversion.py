@@ -36,21 +36,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Set, cast
 
-from sqlalchemy import create_engine, Column, String, Integer, ForeignKey
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, JSON, Uuid, Table
 from sqlalchemy.orm import relationship, sessionmaker, Session, mapped_column, Mapped
 
-# Import base classes from the ecs module
-from minference.ecs.entity import Entity
-# We'll still need the internal test utilities from sql_entity.py
-import sys
-import os
-
-# Add the project root to sys.path for relative imports in tests
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from tests.sql.sql_entity import (
-    EntityBase, Base, BaseEntitySQL,
-    create_association_table, compare_entity_fields
-)
+# Import required classes and functions from the ecs and threads modules
+from minference.ecs.entity import Entity, compare_entity_fields, create_association_table, BaseEntitySQL
+from minference.threads.sql_models import Base, EntityBase
 
 # Create a separate metadata instance for these tests
 from sqlalchemy import MetaData
@@ -115,6 +106,10 @@ class SimpleEntityORM(TestEntityBase):
     """ORM model for SimpleEntity."""
     __tablename__ = "test_simpleentityorm"
     
+    __mapper_args__ = {
+        "polymorphic_identity": "simpleentity"
+    }
+    
     name: Mapped[str] = mapped_column(String(100))
     value: Mapped[int] = mapped_column(Integer)
     
@@ -147,12 +142,17 @@ class SimpleEntityORM(TestEntityBase):
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Store as strings instead of UUID objects
             name=entity.name,
-            value=entity.value
+            value=entity.value,
+            entity_type="simpleentity"
         )
 
 class NestedEntityORM(TestEntityBase):
     """ORM model for NestedEntity."""
     __tablename__ = "test_nestedentityorm"
+    
+    __mapper_args__ = {
+        "polymorphic_identity": "nestedentity"
+    }
     
     title: Mapped[str] = mapped_column(String(100))
     nested_id: Mapped[Optional[int]] = mapped_column(ForeignKey("test_simpleentityorm.id"), nullable=True)
@@ -187,7 +187,8 @@ class NestedEntityORM(TestEntityBase):
             parent_id=entity.parent_id,
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Store as strings instead of UUID objects
-            title=entity.title
+            title=entity.title,
+            entity_type="nestedentity"
         )
         return orm
     
@@ -205,6 +206,10 @@ class NestedEntityORM(TestEntityBase):
 class ChildEntityORM(TestEntityBase):
     """ORM model for ChildEntity."""
     __tablename__ = "test_childentityorm"
+    
+    __mapper_args__ = {
+        "polymorphic_identity": "childentity"
+    }
     
     name: Mapped[str] = mapped_column(String(100))
     data: Mapped[str] = mapped_column(String(255))
@@ -238,7 +243,8 @@ class ChildEntityORM(TestEntityBase):
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Store as strings instead of UUID objects
             name=entity.name,
-            data=entity.data
+            data=entity.data,
+            entity_type="childentity"
         )
 
 # Create association table for many-to-many relationship
@@ -252,6 +258,10 @@ parent_child_association = Table(
 class ParentEntityORM(TestEntityBase):
     """ORM model for ParentEntity."""
     __tablename__ = "test_parententityorm"
+    
+    __mapper_args__ = {
+        "polymorphic_identity": "parententity"
+    }
     
     name: Mapped[str] = mapped_column(String(100))
     children_orm: Mapped[List[ChildEntityORM]] = relationship(
@@ -287,7 +297,8 @@ class ParentEntityORM(TestEntityBase):
             parent_id=entity.parent_id,
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Store as strings instead of UUID objects
-            name=entity.name
+            name=entity.name,
+            entity_type="parententity"
         )
     
     def handle_relationships(self, entity: ParentEntity, session: Session, orm_objects: Dict[uuid.UUID, Any]) -> None:
@@ -310,6 +321,10 @@ class ParentEntityORM(TestEntityBase):
 class ComplexEntityORM(TestEntityBase):
     """ORM model for ComplexEntity."""
     __tablename__ = "test_complexentityorm"
+    
+    __mapper_args__ = {
+        "polymorphic_identity": "complexentity"
+    }
     
     name: Mapped[str] = mapped_column(String(100))
     
@@ -364,7 +379,8 @@ class ComplexEntityORM(TestEntityBase):
             parent_id=entity.parent_id,
             created_at=entity.created_at,
             old_ids=str_old_ids,  # Store as strings instead of UUID objects
-            name=entity.name
+            name=entity.name,
+            entity_type="complexentity"
         )
     
     def handle_relationships(self, entity: ComplexEntity, session: Session, orm_objects: Dict[uuid.UUID, Any]) -> None:

@@ -113,13 +113,22 @@ class ChatThreadSQL(EntityBase):
         history = []
         if self.messages:
             history = [msg.to_entity() for msg in self.messages]
+        
+        # Convert old_ids strings back to UUID objects
+        uuid_old_ids = []
+        if self.old_ids:
+            for old_id in self.old_ids:
+                if isinstance(old_id, str):
+                    uuid_old_ids.append(UUID(old_id))
+                elif isinstance(old_id, UUID):
+                    uuid_old_ids.append(old_id)
             
         return ChatThread(
             ecs_id=self.ecs_id,
             lineage_id=self.lineage_id,
             parent_id=self.parent_id,
             created_at=self.created_at,
-            old_ids=self.old_ids,
+            old_ids=uuid_old_ids,  # Use converted UUID objects
             name=self.title,
             system_prompt=system_prompt,
             llm_config=llm_config,
@@ -131,12 +140,15 @@ class ChatThreadSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: ChatThread) -> 'ChatThreadSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             title=entity.name,
             entity_type="chat_thread"  # Required field
         )
@@ -252,12 +264,15 @@ class ChatMessageSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: ChatMessage) -> 'ChatMessageSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             timestamp=entity.timestamp,
             role=entity.role.value,  # Convert enum to string
             content=entity.content,
@@ -352,12 +367,15 @@ class SystemPromptSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: SystemPrompt) -> 'SystemPromptSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             prompt_name=entity.name,
             content=entity.content,
             entity_type="system_prompt"  # Required field
@@ -406,12 +424,15 @@ class LLMConfigSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: LLMConfig) -> 'LLMConfigSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             model=entity.model,
             provider_name=entity.client.value,  # From 'client' in Entity (enum)
             max_tokens=entity.max_tokens,
@@ -456,13 +477,16 @@ class ToolSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: Union[CallableTool, StructuredTool]) -> 'ToolSQL':
         """Basic conversion from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         # This will be called by more specific subclasses
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             name=entity.name,
             tool_description=getattr(entity, 'description', None),
             tool_parameters_schema=getattr(entity, 'parameters_schema', {}),
@@ -507,12 +531,15 @@ class CallableToolSQL(ToolSQL):
     @classmethod
     def from_entity(cls, entity: CallableTool) -> 'CallableToolSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             name=entity.name,
             tool_description=entity.docstring,
             tool_parameters_schema={},  # Not used directly
@@ -559,12 +586,15 @@ class StructuredToolSQL(ToolSQL):
     @classmethod
     def from_entity(cls, entity: StructuredTool) -> 'StructuredToolSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             name=entity.name,
             tool_description=entity.description,
             tool_parameters_schema={},  # Not used in StructuredTool
@@ -607,12 +637,15 @@ class UsageSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: Usage) -> 'UsageSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             model=entity.model,
             prompt_tokens=entity.prompt_tokens,
             completion_tokens=entity.completion_tokens,
@@ -650,12 +683,15 @@ class GeneratedJsonObjectSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: GeneratedJsonObject) -> 'GeneratedJsonObjectSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             obj_name=entity.name,
             obj_object=entity.object,
             obj_data={},  # Default value since current entity doesn't have this
@@ -702,12 +738,15 @@ class RawOutputSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: RawOutput) -> 'RawOutputSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             raw_result=entity.raw_result,
             completion_kwargs=entity.completion_kwargs,
             start_time=entity.start_time,
@@ -789,12 +828,15 @@ class ProcessedOutputSQL(EntityBase):
     @classmethod
     def from_entity(cls, entity: ProcessedOutput) -> 'ProcessedOutputSQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             content=entity.content,
             error=entity.error,
             time_taken=entity.time_taken,

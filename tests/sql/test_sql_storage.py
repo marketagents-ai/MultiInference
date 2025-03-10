@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Type, Optional, Any, Set, cast
 from copy import deepcopy
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, JSON, Uuid 
+from sqlalchemy.orm import sessionmaker, Session, mapped_column, Mapped
 
 # Add the project root to sys.path for relative imports in tests
 import sys
@@ -33,11 +33,8 @@ from tests.sql.test_sql_entity_conversion import (
 )
 
 # Import the entity storage implementation
-from minference.ecs.entity import Entity, EntityRegistry
-from tests.sql.sql_entity import (
-    EntityBase, BaseEntitySQL, SqlEntityStorage,
-    create_association_table
-)
+from minference.ecs.entity import Entity, EntityRegistry, create_association_table, SqlEntityStorage, BaseEntitySQL
+from minference.threads.sql_models import EntityBase
 
 # Add EntityRegistry to __main__ for entity methods
 import sys
@@ -51,7 +48,25 @@ class TestSqlEntityStorage(unittest.TestCase):
         # Create in-memory SQLite database
         self.engine = create_engine("sqlite:///:memory:")
         
+        # Create a Base instance with BaseEntitySQL
+        from sqlalchemy.orm import declarative_base
+        Base_test = declarative_base()
+        
+        # Create a table for BaseEntitySQL
+        class BaseEntitySQLTable(Base_test):
+            __tablename__ = "baseentitysql"
+            
+            id = mapped_column(Integer, primary_key=True, autoincrement=True)
+            ecs_id = mapped_column(Uuid, nullable=False, index=True, unique=True)
+            lineage_id = mapped_column(Uuid, nullable=False, index=True)
+            parent_id = mapped_column(Uuid, nullable=True, index=True)
+            created_at = mapped_column(DateTime(timezone=True), nullable=False)
+            old_ids = mapped_column(JSON, nullable=False, default=list)
+            class_name = mapped_column(String(255), nullable=False)
+            data = mapped_column(JSON, nullable=False)
+        
         # Create all tables
+        Base_test.metadata.create_all(self.engine)
         Base.metadata.create_all(self.engine)
         
         # Create a session factory

@@ -172,9 +172,29 @@ We have implemented a pure SQLAlchemy-based storage backend with the following c
 
 ### Current Issues and Challenges
 
-1. **UUID Serialization**: The main issue is with UUID serialization in the JSON column. We need to convert UUID objects to strings before storing them in the database:
+1. ✅ **UUID Serialization**: Fixed the issue with UUID serialization in JSON columns by:
+   - Converting UUID objects to strings in all `from_entity` methods
+   - Converting string representations back to UUID objects in `to_entity` methods
+   - Affecting all entity classes that store data in JSON columns
+   
+   The issue was:
    ```
    TypeError: Object of type UUID is not JSON serializable
+   ```
+   
+   The solution implemented:
+   ```python
+   # In from_entity methods:
+   str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+   
+   # In to_entity methods:
+   uuid_old_ids = []
+   if self.old_ids:
+       for old_id in self.old_ids:
+           if isinstance(old_id, str):
+               uuid_old_ids.append(UUID(old_id))
+           elif isinstance(old_id, UUID):
+               uuid_old_ids.append(old_id)
    ```
 
 2. **Database vs Entity IDs**: We need to clearly separate database row IDs (auto-incrementing integers) from entity versioning UUIDs. The current implementation properly creates separate IDs but needs better handling during serialization.
@@ -183,38 +203,18 @@ We have implemented a pure SQLAlchemy-based storage backend with the following c
 
 4. **Relationship Complexity**: Managing different types of relationships (one-to-one, one-to-many, many-to-many) requires careful implementation of relationship handling methods on each ORM model.
 
-### Technical Recommendations for UUID Serialization
+### UUID Serialization Implementation
 
-We need to fix the UUID serialization issue that's causing the test failures. There are three main approaches:
+We implemented a solution for the UUID serialization issue that was causing test failures. We chose the Type Conversion approach in all entity model classes:
 
-1. **Custom JSON Serializer for SQLAlchemy**:
-   ```python
-   import json
-   from uuid import UUID
+1. ✅ **Type Conversion in from_entity and to_entity Methods**:
+   We applied this approach to all ORM model classes in the system. The implementation:
    
-   # Custom JSON serializer that handles UUIDs
-   class UUIDEncoder(json.JSONEncoder):
-       def default(self, obj):
-           if isinstance(obj, UUID):
-               return str(obj)
-           return super().default(obj)
-   
-   # Use this encoder with SQLAlchemy
-   from sqlalchemy.dialects.postgresql import JSON as PostgresJSON
-   
-   # Define JSON column with custom serializer
-   old_ids = mapped_column(PostgresJSON(none_as_null=True), 
-                         default=list, 
-                         nullable=False,
-                         info={"serialize_json": lambda obj: json.dumps(obj, cls=UUIDEncoder)})
-   ```
-
-2. **Type Conversion in from_entity Method**:
    ```python
    @classmethod
    def from_entity(cls, entity: Entity) -> 'EntityBaseSQL':
        # Convert UUID lists to string lists
-       str_old_ids = [str(uid) for uid in entity.old_ids]
+       str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
        
        return cls(
            ecs_id=entity.ecs_id,
@@ -224,44 +224,63 @@ We need to fix the UUID serialization issue that's causing the test failures. Th
            old_ids=str_old_ids,  # Store as strings
            # ... other fields
        )
-   ```
-
-3. **TypeDecorator for UUID Lists**:
-   ```python
-   from sqlalchemy.types import TypeDecorator, VARCHAR
    
-   class UUIDList(TypeDecorator):
-       """Convert between Python UUID list and SQL JSON string."""
-       impl = VARCHAR
-       cache_ok = True
+   def to_entity(self) -> Entity:
+       # Convert string representation back to UUID objects
+       uuid_old_ids = []
+       if self.old_ids:
+           for old_id in self.old_ids:
+               if isinstance(old_id, str):
+                   uuid_old_ids.append(UUID(old_id))
+               elif isinstance(old_id, UUID):
+                   uuid_old_ids.append(old_id)
        
-       def process_bind_param(self, value, dialect):
-           if value is None:
-               return '[]'
-           return json.dumps([str(val) for val in value])
-           
-       def process_result_value(self, value, dialect):
-           if value is None:
-               return []
-           return [UUID(val) for val in json.loads(value)]
+       return EntityType(
+           ecs_id=self.ecs_id,
+           lineage_id=self.lineage_id,
+           parent_id=self.parent_id,
+           created_at=self.created_at,
+           old_ids=uuid_old_ids,  # Use converted UUID objects
+           # ... other fields
+       )
    ```
 
-The second approach is likely the simplest and most effective for our specific use case, as it keeps the serialization logic in the explicit conversion methods.
+This approach was applied to all ORM model classes in `minference/threads/sql_models.py` and the `BaseEntitySQL` class in `minference/ecs/entity.py`. 
+
+The benefit of this approach is:
+1. It's explicit and easy to understand
+2. It keeps the serialization logic in the conversion methods
+3. It doesn't require custom TypeDecorators
+4. It's compatible with all database backends
+
+All 32 tests in the SQL test suite now pass successfully, confirming the fix is working correctly.
 
 ### Next Steps
 
-1. Implement the UUID serialization fix in the ORM models
+1. ✅ Implement the UUID serialization fix in the ORM models - **COMPLETED**
 2. Improve type safety in the SqlEntityStorage class, particularly for the _get_orm_class method
 3. Complete the test suite to cover all core operations:
    - Basic entity storage and retrieval ✓
    - Nested entity relationships ✓
    - Many-to-many relationships ✓
-   - Entity modification and versioning (fix needed)
+   - Entity modification and versioning ✓
    - Querying by type ✓
    - Batch operations ✓
 
 4. Integrate the implementation with the main codebase by replacing the SQLModel-based storage
 5. Evaluate performance with larger datasets and optimize as needed
+
+### Test Status
+
+All tests in the SQL module are now passing. This includes:
+- Entity conversion tests
+- Storage interface tests
+- ORM table creation tests
+- Entity identity preservation tests
+- SQL registry integration tests
+- Thread entity model tests
+
+This represents a significant milestone in the migration from SQLModel to pure SQLAlchemy, with all core functionality correctly implemented and tested.
 
 ## Current Development: SQLAlchemy Migration
 
@@ -298,6 +317,29 @@ We have built a comprehensive test suite that verifies:
 3. **Relationship Loading**: Loading complex entity graphs with eager loading
 4. **Many-to-Many Associations**: Thread-to-Tool associations with proper loading
 5. **Polymorphic Inheritance**: Tool hierarchy with specialized fields
+
+### Recent Fixes and Improvements
+
+1. **Fixed Field Naming Issues**:
+   - Changed field names to match the domain entities (e.g., `description` → `docstring`, `parameters_schema` → `input_schema`)
+   - Ensured consistent field naming across entity-to-SQL conversion methods
+   - Added proper discriminator fields for polymorphic inheritance
+
+2. **Type Handling Improvements**:
+   - Added proper Float types for numeric fields
+   - Fixed SQLite UUID handling
+   - Improved enum value handling in conversions
+   - Implemented proper type conversion for datetime fields with timezone awareness
+
+3. **Relationship Management**:
+   - Enhanced relationship handling methods to properly set up bidirectional relationships
+   - Added proper session and orm_objects parameters to relationship methods
+   - Fixed the entity identity preservation in nested relationships
+
+4. **Test Suite Enhancements**:
+   - Updated test helper functions to create valid entities for testing
+   - Improved test assertions to check proper field mapping
+   - Created dedicated entity identity preservation tests
 
 ### Next Steps
 1. Integrate the SQLAlchemy models with the EntityRegistry to enable storage and retrieval through the existing API

@@ -1055,13 +1055,22 @@ class BaseEntitySQL(EntityBase):
     def to_entity(self) -> Entity:
         cls_obj = dynamic_import(self.class_name)
         
+        # Convert old_ids strings back to UUID objects if needed
+        uuid_old_ids = []
+        if self.old_ids:
+            for old_id in self.old_ids:
+                if isinstance(old_id, str):
+                    uuid_old_ids.append(UUID(old_id))
+                elif isinstance(old_id, UUID):
+                    uuid_old_ids.append(old_id)
+        
         # Merge versioning fields + data
         combined = {
             "ecs_id": self.ecs_id,
             "lineage_id": self.lineage_id,
             "parent_id": self.parent_id,
             "created_at": self.created_at,
-            "old_ids": self.old_ids,  # SQLAlchemy already converted from database format to Python
+            "old_ids": uuid_old_ids,  # Converted back to UUID objects
             "from_storage": True,
             **self.data
         }
@@ -1073,13 +1082,16 @@ class BaseEntitySQL(EntityBase):
         raw = entity.model_dump()
         data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
         
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         # The SQLAlchemy Uuid type will handle the conversion of Python UUID objects to database format
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=entity.old_ids,  # SQLAlchemy JSON type will handle serialization properly
+            old_ids=str_old_ids,  # Use string representation for JSON serialization
             class_name=f"{entity.__class__.__module__}.{entity.__class__.__qualname__}",
             data=data_only
         )
