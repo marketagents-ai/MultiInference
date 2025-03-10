@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy import inspect
 
-from tests.sql.sql_thread_models import Base, ChatThreadSQL, ENTITY_MODEL_MAP
+from minference.threads.sql_models import Base, ChatThreadSQL, ENTITY_MODEL_MAP
 
 @pytest.fixture
 def engine():
@@ -56,8 +56,9 @@ def test_tables_created(engine):
     chat_message_columns = {col["name"] for col in inspector.get_columns("chat_message")}
     assert "role" in chat_message_columns
     assert "content" in chat_message_columns
-    assert "message_name" in chat_message_columns  # Renamed from "name"
-    assert "message_tool_call_id" in chat_message_columns  # Renamed from "tool_call_id"
+    # The message_name field no longer exists
+    assert "author_uuid" in chat_message_columns
+    assert "oai_tool_call_id" in chat_message_columns  # Now using this field name
     
     tool_columns = {col["name"] for col in inspector.get_columns("tool")}
     assert "name" in tool_columns

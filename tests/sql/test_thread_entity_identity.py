@@ -18,7 +18,7 @@ from minference.threads.models import (
     SystemPrompt, LLMConfig, LLMClient, ResponseFormat 
 )
 
-from tests.sql.sql_thread_models import (
+from minference.threads.sql_models import (
     Base, SystemPromptSQL, LLMConfigSQL
 )
 

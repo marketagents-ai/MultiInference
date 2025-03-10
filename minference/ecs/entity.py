@@ -959,634 +959,656 @@ class InMemoryEntityStorage(EntityStorage):
 # 6) SQL Storage Integration
 ##############################
 
+from sqlalchemy import (
+    Column, String, Integer, DateTime, JSON, ForeignKey, Table,
+    create_engine, inspect, or_, text, select as sa_select, Uuid as SQLAUuid
+)
+from sqlalchemy.orm import (
+    DeclarativeBase, Mapped, mapped_column, relationship,
+    Session, sessionmaker, joinedload, registry as sa_registry
+)
+from sqlalchemy.ext.declarative import declared_attr
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+import importlib
+from datetime import timezone
+from typing import Tuple, Dict, List, Any, Optional, Type, ClassVar, Set, Union, cast
 
-try:
-    from sqlmodel import SQLModel, Field, select, Session, create_engine
-    from sqlalchemy import Column, JSON, inspect, or_
-    from sqlalchemy.orm import joinedload, RelationshipProperty
-    import importlib
-    from datetime import timezone
-    from typing import Tuple, Dict, List, Any, Optional, Type, ClassVar, Set, Union, cast
+# Base class for all SQL models
+class Base(DeclarativeBase):
+    """SQLAlchemy declarative base class."""
+    pass
+
+def dynamic_import(path_str: str) -> Type[Entity]:
+    """Import a class dynamically by its dotted path."""
+    try:
+        mod_name, cls_name = path_str.rsplit(".", 1)
+        mod = importlib.import_module(mod_name)
+        return getattr(mod, cls_name)
+    except (ImportError, AttributeError) as e:
+        raise ImportError(f"Failed to import {path_str}: {e}")
+
+# Association table helper function
+def create_association_table(table_name: str, left_id: str, right_id: str) -> Table:
+    """
+    Create a SQLAlchemy association table for many-to-many relationships.
     
-    def dynamic_import(path_str: str) -> Type[Entity]:
-        """Import a class dynamically by its dotted path."""
+    Args:
+        table_name: Name for the association table
+        left_id: Column name for the left side foreign key
+        right_id: Column name for the right side foreign key
+        
+    Returns:
+        SQLAlchemy Table object for the association
+    """
+    return Table(
+        table_name,
+        Base.metadata,
+        Column(f"{left_id}_id", Integer, ForeignKey(f"{left_id}.id"), primary_key=True),
+        Column(f"{right_id}_id", Integer, ForeignKey(f"{right_id}.id"), primary_key=True)
+    )
+
+class EntityBase(Base):
+    """
+    Base SQLAlchemy model for all entity tables.
+    
+    Provides common columns and functionality that all entity tables will share.
+    """
+    __abstract__ = True
+    
+    # Primary key (auto-incrementing integer)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    
+    # Entity versioning fields
+    ecs_id: Mapped[UUID] = mapped_column(SQLAUuid, index=True)
+    lineage_id: Mapped[UUID] = mapped_column(SQLAUuid, index=True)
+    parent_id: Mapped[Optional[UUID]] = mapped_column(SQLAUuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    old_ids: Mapped[List[UUID]] = mapped_column(JSON)
+    
+    # Table name derivation - using string literal to avoid declared_attr issues
+    __tablename__: str = ""  # Will be overridden by subclasses
+    
+    # Common methods to convert between SQL model and Pydantic entity
+    def to_entity(self) -> Entity:
+        """Convert SQLAlchemy model to Pydantic Entity."""
+        raise NotImplementedError("Subclasses must implement to_entity")
+    
+    @classmethod
+    def from_entity(cls, entity: Entity) -> 'EntityBase':
+        """Convert Pydantic Entity to SQLAlchemy model."""
+        raise NotImplementedError("Subclasses must implement from_entity")
+    
+    def handle_relationships(self, entity: Entity, session: Session, orm_objects: Dict[UUID, Any]) -> None:
+        """Handle entity relationships for this model."""
+        pass
+
+class BaseEntitySQL(EntityBase):
+    """Fallback table for storing any Entity if no specialized table is found."""
+    __tablename__ = "baseentitysql"
+    
+    # The dotted Python path for the real class
+    class_name: Mapped[str] = mapped_column(String)
+
+    # Non-versioning fields are stored here as JSON
+    data: Mapped[Dict[str, Any]] = mapped_column(JSON)
+
+    def to_entity(self) -> Entity:
+        cls_obj = dynamic_import(self.class_name)
+        
+        # Merge versioning fields + data
+        combined = {
+            "ecs_id": self.ecs_id,
+            "lineage_id": self.lineage_id,
+            "parent_id": self.parent_id,
+            "created_at": self.created_at,
+            "old_ids": self.old_ids,  # SQLAlchemy already converted from database format to Python
+            "from_storage": True,
+            **self.data
+        }
+        return cls_obj(**combined)
+
+    @classmethod
+    def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
+        versioning_fields = {"ecs_id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id", "from_storage", "force_parent_fork"}
+        raw = entity.model_dump()
+        data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
+        
+        # The SQLAlchemy Uuid type will handle the conversion of Python UUID objects to database format
+        return cls(
+            ecs_id=entity.ecs_id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
+            created_at=entity.created_at,
+            old_ids=entity.old_ids,  # SQLAlchemy JSON type will handle serialization properly
+            class_name=f"{entity.__class__.__module__}.{entity.__class__.__qualname__}",
+            data=data_only
+        )
+
+class SqlEntityStorage(EntityStorage):
+    """
+    SQLAlchemy-based entity storage implementation.
+    
+    Features:
+    - Pure SQLAlchemy ORM instead of SQLModel
+    - Proper relationship handling with association tables
+    - Type-safe conversion between entities and database models
+    - Optimized querying with proper joins
+    """
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        entity_to_orm_map: Dict[Type[Entity], Type[EntityBase]]
+    ) -> None:
+        """
+        Initialize SQL storage with session factory and entity mappings.
+        
+        Args:
+            session_factory: Factory function to create SQLAlchemy sessions
+            entity_to_orm_map: Mapping from entity types to their SQLAlchemy models
+        """
+        self._logger = logging.getLogger("SqlEntityStorage")
+        self._session_factory = session_factory
+        self._entity_to_orm_map = entity_to_orm_map
+        self._inference_orchestrator: Optional[object] = None
+        
+        # If BaseEntitySQL is available, use it as fallback
+        if Entity not in self._entity_to_orm_map:
+            self._entity_to_orm_map[Entity] = BaseEntitySQL
+            self._logger.info("Added BaseEntitySQL as fallback ORM mapping")
+        
+        # Cache to avoid repeated lookups
+        self._entity_class_map: Dict[UUID, Type[Entity]] = {}
+        self._entity_orm_cache: Dict[Type[Entity], Type[EntityBase]] = {}
+        self._logger.info(f"Initialized SQL storage with {len(entity_to_orm_map)} entity mappings")
+    
+    def get_session(self, existing_session: Optional[Session] = None) -> Tuple[Session, bool]:
+        """
+        Get a session - either the provided one or a new one.
+        
+        Args:
+            existing_session: Optional existing session to reuse
+                
+        Returns:
+            Tuple of (session, should_close_when_done)
+        """
+        if existing_session is not None:
+            self._logger.debug("Reusing provided session")
+            return existing_session, False
+                
+        self._logger.debug("Creating new session")
+        return self._session_factory(), True
+    
+    def has_entity(self, entity_id: UUID, session: Optional[Session] = None) -> bool:
+        """
+        Check if an entity exists in storage.
+        
+        Args:
+            entity_id: UUID of the entity to check
+            session: Optional session to reuse
+                
+        Returns:
+            True if the entity exists, False otherwise
+        """
+        session, should_close = self.get_session(session)
         try:
-            mod_name, cls_name = path_str.rsplit(".", 1)
-            mod = importlib.import_module(mod_name)
-            return getattr(mod, cls_name)
-        except (ImportError, AttributeError) as e:
-            raise ImportError(f"Failed to import {path_str}: {e}")
-
-    class BaseEntitySQL(SQLModel, table=True):
-        """Fallback table for storing any Entity if no specialized table is found."""
-        # Database primary key (integer, auto-incremented)
-        id: Optional[int] = Field(default=None, primary_key=True)
-        
-        # Entity versioning fields
-        ecs_id: UUID = Field(default_factory=uuid4, index=True)
-        lineage_id: UUID = Field(default_factory=uuid4, index=True)
-        parent_id: Optional[UUID] = Field(default=None)  # Can't use foreign key to itself safely
-        created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        old_ids: List[UUID] = Field(default_factory=list, sa_column=Column(JSON))
-
-        # The dotted Python path for the real class
-        class_name: str = Field(...)
-
-        # Non-versioning fields are stored here as JSON
-        data: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-
-        def to_entity(self) -> Entity:
-            cls_obj = dynamic_import(self.class_name)
-            # Merge versioning fields + data
-            combined = {
-                "ecs_id": self.ecs_id,  # Changed from "id" to "ecs_id"
-                "lineage_id": self.lineage_id,
-                "parent_id": self.parent_id,
-                "created_at": self.created_at,
-                "old_ids": self.old_ids,
-                "from_storage": True,
-                **self.data
-            }
-            return cls_obj(**combined)
-
-        @classmethod
-        def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
-            versioning_fields = {"ecs_id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id", "from_storage", "force_parent_fork"}
-            raw = entity.model_dump()
-            data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
-            return cls(
-                ecs_id=entity.ecs_id,
-                lineage_id=entity.lineage_id,
-                parent_id=entity.parent_id,
-                created_at=entity.created_at,
-                old_ids=entity.old_ids,
-                class_name=f"{entity.__class__.__module__}.{entity.__class__.__qualname__}",
-                data=data_only
-            )
-            
-        def handle_relationships(self, entity: Entity, session: Session, orm_objects: Dict[UUID, Any]) -> None:
-            """Generic relationship handler - can be implemented by each ORM model"""
-            # Base implementation does nothing - subclasses can override
-            pass
-
-    class SqlEntityStorage(EntityStorage):
-        """
-        Optimized SQL-based storage implementation with proper relationship handling.
-        
-        Features:
-        - Session reuse for related operations
-        - Type-agnostic many-to-many relationship handling
-        - Two-phase entity storage (store entities first, then establish relationships)
-        - Comprehensive logging for debugging
-        - Proper lookup by ecs_id instead of database id
-        """
-        def __init__(
-            self,
-            session_factory: Callable[..., Session],
-            entity_to_orm_map: Dict[Type[Entity], Type[Any]]
-        ) -> None:
-            self._logger = logging.getLogger("SqlEntityStorage")
-            self._session_factory = session_factory
-            self._entity_to_orm_map = entity_to_orm_map
-            self._inference_orchestrator: Optional[object] = None
-            
-            # If BaseEntitySQL is available, use it as fallback
-            if BaseEntitySQL and Entity not in self._entity_to_orm_map:
-                self._entity_to_orm_map[Entity] = BaseEntitySQL
-                self._logger.info("Added BaseEntitySQL as fallback ORM mapping")
-            
-            # Cache to avoid repeated lookups
-            self._entity_class_map: Dict[UUID, Type[Entity]] = {}
-            self._logger.info(f"Initialized SQL storage with {len(entity_to_orm_map)} entity mappings")
-        
-        def get_session(self, existing_session: Optional[Session] = None) -> Tuple[Session, bool]:
-            """
-            Get a session - either the provided one or a new one.
-            
-            Args:
-                existing_session: Optional existing session to reuse
-                
-            Returns:
-                Tuple of (session, should_close_when_done)
-            """
-            if existing_session is not None:
-                self._logger.debug("Reusing provided session")
-                return existing_session, False
-                
-            self._logger.debug("Creating new session")
-            return self._session_factory(), True
-        
-        def has_entity(self, entity_id: UUID, session: Optional[Session] = None) -> bool:
-            """
-            Check if an entity exists in storage.
-            
-            Args:
-                entity_id: UUID of the entity to check
-                session: Optional session to reuse
-                
-            Returns:
-                True if the entity exists, False otherwise
-            """
-            # Check cache first
+            # Check if the entity ID is cached
             if entity_id in self._entity_class_map:
-                self._logger.debug(f"Entity {entity_id} found in cache")
-                return True
+                entity_type = self._entity_class_map[entity_id]
+                orm_class = self._get_orm_class(entity_type)
+                exists = session.query(orm_class).filter(orm_class.ecs_id == entity_id).first() is not None
+                return exists
             
-            # Query database
-            session_obj, should_close = self.get_session(session)
-            try:
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    stmt = select(orm_cls).where(orm_cls.ecs_id == entity_id)
-                    result = session_obj.exec(stmt).first()
-                    if result is not None:
-                        entity = result.to_entity()
-                        self._entity_class_map[entity_id] = type(entity)
-                        self._logger.debug(f"Entity {entity_id} found in database")
-                        return True
-                return False
-            except Exception as e:
-                self._logger.error(f"Error checking entity existence: {str(e)}")
-                return False
-            finally:
-                if should_close:
-                    session_obj.close()
+            # If not cached, check all possible tables
+            for orm_class in self._entity_to_orm_map.values():
+                exists = session.query(orm_class).filter(orm_class.ecs_id == entity_id).first() is not None
+                if exists:
+                    return True
+            return False
+        finally:
+            if should_close:
+                session.close()
+    
+    def register(self, entity_or_id: Union[Entity, UUID], session: Optional[Session] = None) -> Optional[Entity]:
+        """
+        Register a root entity and all its sub-entities in a single transaction.
         
-        def register(self, entity_or_id: Union[Entity, UUID], session: Optional[Session] = None) -> Optional[Entity]:
-            """Register a root entity and all its sub-entities in a single transaction."""
-            if isinstance(entity_or_id, UUID):
-                return self.get(entity_or_id, None, session=session)
+        Args:
+            entity_or_id: Entity to register or UUID to retrieve
+            session: Optional session to reuse
                 
-            entity = entity_or_id
-            self._logger.info(f"Registering root entity {type(entity).__name__}({entity.ecs_id})")
+        Returns:
+            The registered entity, or None if registration failed
+        """
+        # Handle UUID case - just retrieve the entity
+        if isinstance(entity_or_id, UUID):
+            return self.get(entity_or_id, None, session)
+        
+        entity = entity_or_id
+        
+        # Create a new session if needed
+        own_session = session is None
+        if own_session:
+            session = self._session_factory()
+        
+        try:
+            # Check if entity already exists and has modifications
+            if self.has_entity(entity.ecs_id, session):
+                existing = self.get_cold_snapshot(entity.ecs_id, session)
+                if existing and entity.has_modifications(existing)[0]:
+                    # Entity exists but has changed - fork it
+                    self._logger.info(f"Entity {entity.ecs_id} has modifications, forking")
+                    entity = entity.fork()
             
-            # Create a new session if we don't have one
-            own_session = session is None
-            session_obj = session or self._session_factory()
+            # Store the entire entity tree
+            self._store_entity_tree(entity, session)
             
-            try:
-                # Store the entire entity tree
-                self._store_entity_tree(entity, session_obj)
+            # Commit if using our own session
+            if own_session:
+                session.commit()
                 
-                # Commit if we created the session
-                if own_session:
-                    session_obj.commit()
+            return entity
+        except Exception as e:
+            # Roll back if using our own session
+            if own_session:
+                session.rollback()
+            self._logger.error(f"Error registering entity: {str(e)}")
+            raise
+        finally:
+            # Close if using our own session
+            if own_session:
+                session.close()
+    
+    def get_cold_snapshot(self, entity_id: UUID, session: Optional[Session] = None) -> Optional[Entity]:
+        """
+        Get the stored version of an entity.
+        
+        Args:
+            entity_id: UUID of the entity to retrieve
+            session: Optional session to reuse
+                
+        Returns:
+            The stored entity, or None if not found
+        """
+        session, should_close = self.get_session(session)
+        try:
+            # If we know the entity type, query the specific table
+            if entity_id in self._entity_class_map:
+                entity_type = self._entity_class_map[entity_id]
+                orm_class = self._get_orm_class(entity_type)
+                
+                orm_entity = session.query(orm_class).filter(orm_class.ecs_id == entity_id).first()
+                if orm_entity:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
+                    return entity
+            
+            # Otherwise, search all tables
+            for orm_class in self._entity_to_orm_map.values():
+                orm_entity = session.query(orm_class).filter(orm_class.ecs_id == entity_id).first()
+                if orm_entity:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
+                    # Cache the entity type for future lookups
+                    self._entity_class_map[entity_id] = type(entity)
+                    return entity
+            
+            return None
+        finally:
+            if should_close:
+                session.close()
+    
+    def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]] = None, 
+            session: Optional[Session] = None) -> Optional[Entity]:
+        """
+        Get an entity by ID with optional type checking.
+        
+        Args:
+            entity_id: UUID of the entity to retrieve
+            expected_type: Optional type to check against
+            session: Optional session to reuse
+                
+        Returns:
+            The entity, or None if not found or type mismatch
+        """
+        session, should_close = self.get_session(session)
+        try:
+            # Get the cold snapshot
+            entity = self.get_cold_snapshot(entity_id, session)
+            if not entity:
+                return None
+            
+            # Check the type if requested
+            if expected_type and not isinstance(entity, expected_type):
+                self._logger.error(f"Type mismatch: {type(entity).__name__} is not a {expected_type.__name__}")
+                return None
+            
+            # Create a warm copy with a new live_id
+            warm_copy = deepcopy(entity)
+            warm_copy.live_id = uuid4()
+            warm_copy.from_storage = True
+            
+            return warm_copy
+        finally:
+            if should_close:
+                session.close()
+    
+    def list_by_type(self, entity_type: Type[Entity], session: Optional[Session] = None) -> List[Entity]:
+        """
+        List all entities of a specific type.
+        
+        Args:
+            entity_type: Type of entities to list
+            session: Optional session to reuse
+                
+        Returns:
+            List of entities of the specified type
+        """
+        session, should_close = self.get_session(session)
+        try:
+            results = []
+            
+            # Find all ORM classes that could map to this entity type
+            if entity_type in self._entity_to_orm_map:
+                # Direct mapping
+                orm_class = self._entity_to_orm_map[entity_type]
+                orm_entities = session.query(orm_class).all()
+                for orm_entity in orm_entities:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
                     
-                self._logger.info(f"Successfully registered entity tree for {type(entity).__name__}({entity.ecs_id})")
-                return entity
-                    
-            except Exception as e:
-                if own_session:
-                    self._logger.error(f"Error registering entity tree, rolling back: {str(e)}")
-                    session_obj.rollback()
-                else:
-                    self._logger.error(f"Error registering entity tree (using external session): {str(e)}")
-                return None
-            finally:
-                if own_session:
-                    session_obj.close()
-        
-        def get_cold_snapshot(self, entity_id: UUID, session: Optional[Session] = None) -> Optional[Entity]:
-            """
-            Get the stored version of an entity.
-            
-            Args:
-                entity_id: UUID of the entity to retrieve
-                session: Optional session to reuse
-                
-            Returns:
-                The stored entity, or None if not found
-            """
-            self._logger.debug(f"Getting cold snapshot for entity {entity_id}")
-            
-            # Try with known class first if cached
-            cls_maybe = self._entity_class_map.get(entity_id)
-            self._logger.debug(f"Lookup cached type: {cls_maybe.__name__ if cls_maybe else 'None'}")
-            
-            session_obj, should_close = self.get_session(session)
-            try:
-                if cls_maybe:
-                    orm_cls = self._entity_to_orm_map.get(cls_maybe)
-                    if orm_cls:
-                        # Use select with where clause instead of session.get()
-                        stmt = select(orm_cls).where(orm_cls.ecs_id == entity_id)
-                        # Add joinedload for each relationship using SQLAlchemy's inspect
-                        for rel_name, rel_prop in self._get_relationship_properties(orm_cls).items():
-                            attr = getattr(orm_cls, rel_name)
-                            stmt = stmt.options(joinedload(attr))
-                            
-                        result = session_obj.exec(stmt).first()
-                        if result:
-                            self._logger.debug(f"Found entity {entity_id} in {orm_cls.__name__} table")
-                            entity = result.to_entity()
-                            return entity
-                
-                # Fallback to scanning all tables by ecs_id
-                self._logger.debug(f"Scanning all tables for entity {entity_id}")
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    # Use select with where clause and joinedload for relationships
-                    stmt = select(orm_cls).where(orm_cls.ecs_id == entity_id)
-                    for rel_name, rel_prop in self._get_relationship_properties(orm_cls).items():
-                        attr = getattr(orm_cls, rel_name)
-                        stmt = stmt.options(joinedload(attr))
-                        
-                    result = session_obj.exec(stmt).first()
-                    if result:
-                        entity = result.to_entity()
-                        self._entity_class_map[entity_id] = type(entity)
-                        self._logger.info(f"Found entity {entity_id} in {orm_cls.__name__} table")
-                        return entity
-                
-                self._logger.warning(f"Entity {entity_id} not found in any table")
-                return None
-                
-            except Exception as e:
-                self._logger.error(f"Error getting cold snapshot: {str(e)}")
-                return None
-            finally:
-                if should_close:
-                    self._logger.debug("Closing session after get_cold_snapshot")
-                    session_obj.close()
-        
-        def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]] = None, 
-                session: Optional[Session] = None) -> Optional[Entity]:
-            """
-            Get an entity by ID with optional type checking.
-            
-            Args:
-                entity_id: UUID of the entity to retrieve
-                expected_type: Optional type to check against
-                session: Optional session to reuse
-                
-            Returns:
-                The entity, or None if not found or type mismatch
-            """
-            self._logger.debug(f"Getting entity {entity_id}" + 
-                            (f" (expected type: {expected_type.__name__})" if expected_type else ""))
-            
-            try:
-                entity = self.get_cold_snapshot(entity_id, session=session)
-                if not entity:
-                    self._logger.debug(f"Entity {entity_id} not found")
-                    return None
-                
-                if expected_type and not isinstance(entity, expected_type):
-                    self._logger.error(f"Type mismatch: got {type(entity).__name__}, expected {expected_type.__name__}")
-                    return None
-                
-                # Create a warm copy
-                warm_copy = deepcopy(entity)
-                warm_copy.live_id = uuid4()
-                warm_copy.from_storage = True
-                
-                self._logger.debug(f"Returning warm copy of entity {entity_id} (live_id: {warm_copy.live_id})")
-                return warm_copy
-                
-            except Exception as e:
-                self._logger.error(f"Error getting entity: {str(e)}")
-                return None
-        
-        def list_by_type(self, entity_type: Type[Entity], session: Optional[Session] = None) -> List[Entity]:
-            """
-            List all entities of a specific type.
-            
-            Args:
-                entity_type: Type of entities to list
-                session: Optional session to reuse
-                
-            Returns:
-                List of entities of the specified type
-            """
-            self._logger.debug(f"Listing entities of type {entity_type.__name__}")
-            
-            orm_cls = self._entity_to_orm_map.get(entity_type)
-            if not orm_cls:
-                # Try fallback to BaseEntitySQL if entity_type is Entity
-                if entity_type is Entity and Entity in self._entity_to_orm_map:
-                    orm_cls = self._entity_to_orm_map[Entity]
-                else:
-                    self._logger.warning(f"No ORM mapping found for {entity_type.__name__}")
-                    return []
-            
-            session_obj, should_close = self.get_session(session)
-            try:
-                # Use select with joinedload for relationships
-                stmt = select(orm_cls)
-                for rel_name, rel_prop in self._get_relationship_properties(orm_cls).items():
-                    attr = getattr(orm_cls, rel_name)
-                    stmt = stmt.options(joinedload(attr))
-                    
-                entities: List[Entity] = []
-                results = session_obj.exec(stmt).all()
-                for result in results:
-                    entity = result.to_entity()
+                    # Cache entity type for future lookups
                     self._entity_class_map[entity.ecs_id] = type(entity)
-                    entities.append(entity)
                     
-                self._logger.debug(f"Found {len(entities)} entities of type {entity_type.__name__}")
-                return entities
-                
-            except Exception as e:
-                self._logger.error(f"Error listing entities by type: {str(e)}")
-                return []
-            finally:
-                if should_close:
-                    self._logger.debug("Closing session after list_by_type")
-                    session_obj.close()
+                    # Add to results if type matches
+                    if isinstance(entity, entity_type):
+                        results.append(entity)
+            
+            # Also check for subtypes in the generic table if we're using a fallback
+            if Entity in self._entity_to_orm_map:
+                base_orm = self._entity_to_orm_map[Entity]
+                # Base ORM might be used for generic entities
+                try:
+                    # Get a sample instance to check if it has the class_name attribute
+                    sample = session.query(base_orm).limit(1).first()
+                    if sample and hasattr(sample, 'class_name'):
+                        class_name = f"{entity_type.__module__}.{entity_type.__qualname__}"
+                        # Use getattr to access the class_name attribute safely for type checking
+                        class_name_attr = getattr(base_orm, 'class_name', None)
+                        if class_name_attr is not None:
+                            orm_entities = session.query(base_orm).filter(class_name_attr == class_name).all()
+                        else:
+                            orm_entities = []
+                    else:
+                        # Skip if no class_name attribute or no instances
+                        orm_entities = []
+                except Exception as e:
+                    self._logger.warning(f"Error checking generic table: {str(e)}")
+                    orm_entities = []
+                for orm_entity in orm_entities:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
+                    
+                    # Cache entity type for future lookups
+                    self._entity_class_map[entity.ecs_id] = type(entity)
+                    
+                    # Add to results if type matches
+                    if isinstance(entity, entity_type):
+                        results.append(entity)
+            
+            return results
+        finally:
+            if should_close:
+                session.close()
+    
+    def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]] = None,
+                session: Optional[Session] = None) -> List[Entity]:
+        """
+        Get multiple entities by ID.
         
-        def get_many(self, entity_ids: List[UUID], expected_type: Optional[Type[Entity]] = None,
-                    session: Optional[Session] = None) -> List[Entity]:
-            """
-            Get multiple entities by ID.
-            
-            Args:
-                entity_ids: List of UUIDs to retrieve
-                expected_type: Optional type to check against
-                session: Optional session to reuse
+        Args:
+            entity_ids: List of UUIDs to retrieve
+            expected_type: Optional type to check against
+            session: Optional session to reuse
                 
-            Returns:
-                List of entities matching the IDs and type
-            """
-            self._logger.debug(f"Getting {len(entity_ids)} entities" +
-                            (f" (expected type: {expected_type.__name__})" if expected_type else ""))
+        Returns:
+            List of entities matching the IDs and type
+        """
+        if not entity_ids:
+            return []
             
-            session_obj, should_close = self.get_session(session)
-            try:
-                results: List[Entity] = []
-                
-                if expected_type:
-                    # If we know the type, we can do a single query
-                    orm_cls = self._entity_to_orm_map.get(expected_type)
-                    if orm_cls:
-                        # Use OR conditions for ecs_id filtering
-                        conditions = [orm_cls.ecs_id == entity_id for entity_id in entity_ids]
-                        if conditions:
-                            stmt = select(orm_cls).where(or_(*conditions))
-                            for rel_name, rel_prop in self._get_relationship_properties(orm_cls).items():
-                                attr = getattr(orm_cls, rel_name)
-                                stmt = stmt.options(joinedload(attr))
-                                
-                            db_results = session_obj.exec(stmt).all()
-                            for result in db_results:
-                                entity = result.to_entity()
-                                self._entity_class_map[entity.ecs_id] = type(entity)
-                                
-                                # Create warm copy
-                                warm_copy = deepcopy(entity)
-                                warm_copy.live_id = uuid4()
-                                warm_copy.from_storage = True
-                                
-                                results.append(warm_copy)
+        session, should_close = self.get_session(session)
+        try:
+            results = []
+            
+            # Group IDs by entity type if we can determine them from cache
+            type_groups: Dict[Type[Entity], List[UUID]] = {}
+            unknown_ids = []
+            
+            for entity_id in entity_ids:
+                if entity_id in self._entity_class_map:
+                    entity_type = self._entity_class_map[entity_id]
+                    if entity_type not in type_groups:
+                        type_groups[entity_type] = []
+                    type_groups[entity_type].append(entity_id)
                 else:
-                    # Otherwise, query each ID individually (less efficient)
-                    for entity_id in entity_ids:
-                        entity = self.get(entity_id, expected_type, session=session_obj)
-                        if entity:
-                            results.append(entity)
-                
-                self._logger.debug(f"Retrieved {len(results)}/{len(entity_ids)} entities")
-                return results
-                
-            except Exception as e:
-                self._logger.error(f"Error getting multiple entities: {str(e)}")
-                return []
-            finally:
-                if should_close:
-                    self._logger.debug("Closing session after get_many")
-                    session_obj.close()
-        
-        def get_registry_status(self) -> Dict[str, Any]:
-            """Get status information about the registry."""
-            return {
-                "storage": "sql",
-                "known_ids_in_cache": len(self._entity_class_map)
-            }
-        
-        def set_inference_orchestrator(self, orchestrator: object) -> None:
-            """Set an inference orchestrator."""
-            self._inference_orchestrator = orchestrator
-        
-        def get_inference_orchestrator(self) -> Optional[object]:
-            """Get the current inference orchestrator."""
-            return self._inference_orchestrator
-        
-        def clear(self) -> None:
-            """Clear cached data (doesn't affect database)."""
-            self._entity_class_map.clear()
-            self._logger.warning("SqlEntityStorage.clear() only clears caches, not database data")
-        
-        def get_lineage_entities(self, lineage_id: UUID, session: Optional[Session] = None) -> List[Entity]:
-            """
-            Get all entities with a specific lineage ID.
+                    unknown_ids.append(entity_id)
             
-            Args:
-                lineage_id: Lineage ID to query
-                session: Optional session to reuse
-                
-            Returns:
-                List of entities with the specified lineage ID
-            """
-            self._logger.debug(f"Getting entities with lineage ID {lineage_id}")
-            
-            session_obj, should_close = self.get_session(session)
-            try:
-                entities: List[Entity] = []
-                
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    # Use select with where clause and joinedload for relationships
-                    stmt = select(orm_cls).where(orm_cls.lineage_id == lineage_id)
-                    for rel_name, rel_prop in self._get_relationship_properties(orm_cls).items():
-                        attr = getattr(orm_cls, rel_name)
-                        stmt = stmt.options(joinedload(attr))
-                        
-                    results = session_obj.exec(stmt).unique().all()
-                    
-                    for result in results:
-                        entity = result.to_entity()
-                        self._entity_class_map[entity.ecs_id] = type(entity)
-                        entities.append(entity)
-                
-                self._logger.debug(f"Found {len(entities)} entities with lineage ID {lineage_id}")
-                return entities
-                
-            except Exception as e:
-                self._logger.error(f"Error getting lineage entities: {str(e)}")
-                return []
-            finally:
-                if should_close:
-                    self._logger.debug("Closing session after get_lineage_entities")
-                    session_obj.close()
-        
-        def has_lineage_id(self, lineage_id: UUID, session: Optional[Session] = None) -> bool:
-            """
-            Check if a lineage ID exists.
-            
-            Args:
-                lineage_id: Lineage ID to check
-                session: Optional session to reuse
-                
-            Returns:
-                True if the lineage ID exists, False otherwise
-            """
-            entities = self.get_lineage_entities(lineage_id, session=session)
-            return len(entities) > 0
-        
-        def get_lineage_ids(self, lineage_id: UUID, session: Optional[Session] = None) -> List[UUID]:
-            """
-            Get all entity IDs with a specific lineage ID.
-            
-            Args:
-                lineage_id: Lineage ID to query
-                session: Optional session to reuse
-                
-            Returns:
-                List of entity IDs with the specified lineage ID
-            """
-            return [entity.ecs_id for entity in self.get_lineage_entities(lineage_id, session=session)]
-        
-        def _get_orm_class(self, entity: Entity) -> Optional[Type[Any]]:
-            """
-            Get the appropriate ORM class for an entity.
-            
-            Args:
-                entity: Entity to get ORM class for
-                
-            Returns:
-                ORM class for the entity, or None if not found
-            """
-            try:
-                # Try exact class match
-                orm_cls = self._entity_to_orm_map.get(type(entity))
-                if orm_cls:
-                    self._logger.debug(f"Found exact ORM match for {type(entity).__name__}: {orm_cls.__name__}")
-                    return orm_cls
-                
-                # Try parent classes
-                for entity_cls, orm_cls in self._entity_to_orm_map.items():
-                    if isinstance(entity, entity_cls):
-                        self._logger.debug(f"Found parent ORM match for {type(entity).__name__}: {orm_cls.__name__}")
-                        return orm_cls
-                    
-                self._logger.warning(f"No ORM mapping found for {type(entity).__name__}")
-                return None
-                
-            except Exception as e:
-                self._logger.error(f"Error getting ORM class: {str(e)}")
-                return None
-
-        def _get_relationship_properties(self, orm_cls: Type[Any]) -> Dict[str, RelationshipProperty]:
-            """
-            Get relationship properties for an ORM class using SQLAlchemy's inspect.
-            
-            Args:
-                orm_cls: ORM class to get relationships for
-                
-            Returns:
-                Dictionary of relationship name to RelationshipProperty
-            """
-            try:
-                inspector = inspect(orm_cls)
-                relationships = {}
-                for rel_name, rel_prop in inspector.relationships.items():
-                    relationships[rel_name] = rel_prop
-                return relationships
-            except Exception as e:
-                self._logger.error(f"Error getting relationship properties for {orm_cls.__name__}: {str(e)}")
-                return {}
-
-        def _store_entity_tree(self, entity: Entity, session: Session) -> None:
-            """
-            Store an entire entity tree in a single database transaction.
-            
-            Args:
-                entity: Root entity of the tree
-                session: Session to use
-            """
-            self._logger.debug(f"Storing entity tree for {type(entity).__name__}({entity.ecs_id})")
-            
-            # Collect all entities in the tree
-            entities_to_store: Dict[UUID, Entity] = {}
-            orm_objects: Dict[UUID, Any] = {}
-            
-            def collect_entities(e: Entity) -> None:
-                if e.ecs_id not in entities_to_store:
-                    # Create snapshot for storage
-                    snapshot = create_cold_snapshot(e)
-                    entities_to_store[e.ecs_id] = snapshot
-                    # Collect nested entities
-                    for sub in e.get_sub_entities():
-                        collect_entities(sub)
-            
-            # Collect all entities in the tree
-            collect_entities(entity)
-            self._logger.info(f"Collected {len(entities_to_store)} entities to store")
-            
-            # Store all entities first
-            for e in entities_to_store.values():
-                # Get ORM class for this entity type
-                orm_cls = self._get_orm_class(e)
-                if not orm_cls:
-                    self._logger.error(f"No ORM mapping found for {type(e)}")
+            # Process known types in batches
+            for known_type, ids in type_groups.items():
+                # Skip if expected_type is specified and doesn't match
+                if expected_type and not issubclass(known_type, expected_type):
                     continue
-                
-                # Check if entity exists in database
-                stmt = select(orm_cls).where(orm_cls.ecs_id == e.ecs_id)
-                existing = session.exec(stmt).first()
-                
-                # Convert to ORM object
-                if existing:
-                    # Update existing record
-                    self._logger.debug(f"Updating existing database record for {type(e).__name__}({e.ecs_id})")
-                    try:
-                        # Get fields excluding ID
-                        fields = e.model_dump(exclude={"id"})
-                        for field, value in fields.items():
-                            if hasattr(existing, field):
-                                setattr(existing, field, value)
-                    except AttributeError:
-                        # Fall back to dict for older Pydantic versions
-                        fields = {field: getattr(e, field) for field in e.__dict__ 
-                                 if field != "id" and not field.startswith("_")}
-                        for field, value in fields.items():
-                            setattr(existing, field, value)
-                        
-                    orm_objects[e.ecs_id] = existing
-                else:
-                    # Add new record
-                    self._logger.debug(f"Creating new database record for {type(e).__name__}({e.ecs_id})")
-                    orm_obj = orm_cls.from_entity(e)
-                    session.add(orm_obj)
-                    orm_objects[e.ecs_id] = orm_obj
-            
-            # Flush to get IDs assigned
-            session.flush()
-            
-            # Now handle relationships
-            self._logger.debug(f"Handling relationships for {len(entities_to_store)} entities")
-            for ent_id, orm_obj in orm_objects.items():
-                entity = entities_to_store[ent_id]
-                
-                # Use handle_relationships method if available
-                if hasattr(orm_obj, "handle_relationships") and callable(getattr(orm_obj, "handle_relationships")):
-                    try:
-                        handler = getattr(orm_obj, "handle_relationships")
-                        handler(entity, session, orm_objects)
-                    except Exception as e:
-                        self._logger.error(f"Error in handle_relationships for {type(entity).__name__}: {str(e)}")
                     
-            # Refresh all objects to ensure all changes are loaded
-            for orm_obj in orm_objects.values():
-                session.refresh(orm_obj)
+                # Get the ORM class for this type
+                orm_class = self._get_orm_class(known_type)
+                
+                # Use IN clause for more efficient querying
+                orm_entities = session.query(orm_class).filter(orm_class.ecs_id.in_(ids)).all()
+                
+                # Convert to entities
+                for orm_entity in orm_entities:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
+                    
+                    # Create warm copy
+                    warm_copy = deepcopy(entity)
+                    warm_copy.live_id = uuid4()
+                    warm_copy.from_storage = True
+                    
+                    results.append(warm_copy)
             
-            # Update cache
-            for e in entities_to_store.values():
-                self._entity_class_map[e.ecs_id] = type(e)
+            # Process unknown IDs individually
+            for entity_id in unknown_ids:
+                entity = self.get(entity_id, expected_type, session)
+                if entity:
+                    results.append(entity)
             
-            self._logger.info(f"Successfully stored entity tree with {len(entities_to_store)} entities")
-
-except ImportError:
-    # SQLModel not available, skip SQL storage implementation
-    BaseEntitySQL = None  # type: ignore[assignment]
-    SqlEntityStorage = None  # type: ignore[assignment]
+            return results
+        finally:
+            if should_close:
+                session.close()
+    
+    def get_registry_status(self) -> Dict[str, Any]:
+        """Get status information about the registry."""
+        return {
+            "storage": "sql",
+            "known_ids_in_cache": len(self._entity_class_map)
+        }
+    
+    def set_inference_orchestrator(self, orchestrator: object) -> None:
+        """Set an inference orchestrator."""
+        self._inference_orchestrator = orchestrator
+    
+    def get_inference_orchestrator(self) -> Optional[object]:
+        """Get the current inference orchestrator."""
+        return self._inference_orchestrator
+    
+    def clear(self) -> None:
+        """Clear cached data (doesn't affect database)."""
+        self._entity_class_map.clear()
+        self._logger.warning("SqlEntityStorage.clear() only clears caches, not database data")
+    
+    def get_lineage_entities(self, lineage_id: UUID, session: Optional[Session] = None) -> List[Entity]:
+        """
+        Get all entities with a specific lineage ID.
+        
+        Args:
+            lineage_id: Lineage ID to query
+            session: Optional session to reuse
+                
+        Returns:
+            List of entities with the specified lineage ID
+        """
+        session, should_close = self.get_session(session)
+        try:
+            results = []
+            
+            # Query all tables for entities with the given lineage ID
+            for orm_class in self._entity_to_orm_map.values():
+                # Use efficiently indexed query for lineage_id
+                orm_entities = session.query(orm_class).filter(orm_class.lineage_id == lineage_id).all()
+                
+                for orm_entity in orm_entities:
+                    entity = orm_entity.to_entity()
+                    entity.from_storage = True
+                    
+                    # Cache entity type for future lookups
+                    self._entity_class_map[entity.ecs_id] = type(entity)
+                    
+                    results.append(entity)
+            
+            return results
+        finally:
+            if should_close:
+                session.close()
+    
+    def has_lineage_id(self, lineage_id: UUID, session: Optional[Session] = None) -> bool:
+        """
+        Check if a lineage ID exists.
+        
+        Args:
+            lineage_id: Lineage ID to check
+            session: Optional session to reuse
+                
+        Returns:
+            True if the lineage ID exists, False otherwise
+        """
+        entities = self.get_lineage_entities(lineage_id, session=session)
+        return len(entities) > 0
+    
+    def get_lineage_ids(self, lineage_id: UUID, session: Optional[Session] = None) -> List[UUID]:
+        """
+        Get all entity IDs with a specific lineage ID.
+        
+        Args:
+            lineage_id: Lineage ID to query
+            session: Optional session to reuse
+                
+        Returns:
+            List of entity IDs with the specified lineage ID
+        """
+        return [entity.ecs_id for entity in self.get_lineage_entities(lineage_id, session=session)]
+    
+    def _get_orm_class(self, entity_or_type: Union[Entity, Type[Entity]]) -> Type[EntityBase]:
+        """
+        Get the appropriate ORM class for an entity or entity type.
+        Uses class hierarchy to find the most specific match.
+        
+        Args:
+            entity_or_type: Entity instance or class to find ORM mapping for
+                
+        Returns:
+            ORM class for the entity
+        """
+        # Get the actual type
+        entity_type: Type[Entity]
+        if isinstance(entity_or_type, type):
+            entity_type = entity_or_type
+        else:
+            entity_type = type(entity_or_type)
+        
+        # Check cache first
+        if entity_type in self._entity_orm_cache:
+            return self._entity_orm_cache[entity_type]
+        
+        # Find the most specific match in the class hierarchy
+        for cls in entity_type.__mro__:
+            if cls in self._entity_to_orm_map:
+                # Cache the result for future lookups
+                self._entity_orm_cache[entity_type] = self._entity_to_orm_map[cls]
+                return self._entity_to_orm_map[cls]
+        
+        # If no match found, use the base Entity mapping as fallback
+        if Entity in self._entity_to_orm_map:
+            fallback = self._entity_to_orm_map[Entity]
+            self._entity_orm_cache[entity_type] = fallback
+            self._logger.warning(f"Using fallback mapping for {entity_type.__name__}")
+            return fallback
+        
+        raise ValueError(f"No ORM mapping found for {entity_type.__name__}")
+    
+    def _store_entity_tree(self, entity: Entity, session: Session) -> None:
+        """
+        Store an entire entity tree in a single database transaction.
+        
+        Args:
+            entity: Root entity of the tree
+            session: Session to use
+        """
+        # Track processed entities to avoid duplicates
+        processed_ids = set()
+        orm_objects = {}
+        
+        # Find all entities to store
+        entities_to_store = {entity.ecs_id: entity}
+        for sub in entity.get_sub_entities():
+            entities_to_store[sub.ecs_id] = sub
+            
+        self._logger.info(f"Storing {len(entities_to_store)} entities in tree")
+            
+        # Phase 1: Store all entities first (without relationships)
+        for ecs_id, curr_entity in entities_to_store.items():
+            if ecs_id in processed_ids:
+                continue
+                
+            # Check if entity already exists
+            if self.has_entity(ecs_id, session):
+                self._logger.debug(f"Entity {ecs_id} already exists, retrieving")
+                # Find which table contains this entity
+                for orm_class in self._entity_to_orm_map.values():
+                    orm_obj = session.query(orm_class).filter(orm_class.ecs_id == ecs_id).first()
+                    if orm_obj:
+                        orm_objects[ecs_id] = orm_obj
+                        # Cache entity type
+                        self._entity_class_map[ecs_id] = type(curr_entity)
+                        break
+            else:
+                # Create new ORM object for this entity
+                orm_class = self._get_orm_class(curr_entity)
+                orm_obj = orm_class.from_entity(curr_entity)
+                session.add(orm_obj)
+                orm_objects[ecs_id] = orm_obj
+                
+                # Cache entity type
+                self._entity_class_map[ecs_id] = type(curr_entity)
+                
+            processed_ids.add(ecs_id)
+            
+        # Flush to ensure all objects have IDs
+        session.flush()
+        
+        # Phase 2: Handle relationships
+        for ecs_id, orm_obj in orm_objects.items():
+            if hasattr(orm_obj, 'handle_relationships'):
+                curr_entity = entities_to_store[ecs_id]
+                try:
+                    orm_obj.handle_relationships(curr_entity, session, orm_objects)
+                except Exception as e:
+                    self._logger.error(f"Error handling relationships for {ecs_id}: {str(e)}")
+                    raise
+                    
+        # Flush again to update relationships
+        session.flush()
 
 
 ##############################

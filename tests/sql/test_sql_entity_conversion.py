@@ -39,11 +39,48 @@ from typing import List, Optional, Dict, Any, Set, cast
 from sqlalchemy import create_engine, Column, String, Integer, ForeignKey
 from sqlalchemy.orm import relationship, sessionmaker, Session, mapped_column, Mapped
 
-# Import base classes from sql_entity.py
+# Import base classes from the ecs module
+from minference.ecs.entity import Entity
+# We'll still need the internal test utilities from sql_entity.py
+import sys
+import os
+
+# Add the project root to sys.path for relative imports in tests
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from tests.sql.sql_entity import (
-    Entity, EntityBase, Base, BaseEntitySQL, 
+    EntityBase, Base, BaseEntitySQL,
     create_association_table, compare_entity_fields
 )
+
+# Create a separate metadata instance for these tests
+from sqlalchemy import MetaData
+test_metadata = MetaData()
+
+# Create a subclass of Base using our test metadata
+from sqlalchemy.orm import declarative_base
+TestBase = declarative_base(metadata=test_metadata)
+
+# Create a base class for our test entities using the test metadata
+class TestEntityBase(TestBase):
+    """Abstract base class for our test entity tables."""
+    __abstract__ = True
+    
+    # Primary database key (auto-incremented integer)
+    id = mapped_column(Integer, primary_key=True, autoincrement=True)
+    
+    # Entity versioning fields from the Entity class
+    ecs_id = mapped_column(Uuid, nullable=False, index=True, unique=True)
+    lineage_id = mapped_column(Uuid, nullable=False, index=True)
+    parent_id = mapped_column(Uuid, nullable=True, index=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    old_ids = mapped_column(JSON, nullable=False, default=list)
+    
+    # The entity type for polymorphic identity
+    entity_type = mapped_column(String(50), nullable=False)
+    
+    __mapper_args__ = {
+        "polymorphic_on": entity_type,
+    }
 
 # Create test entities
 class SimpleEntity(Entity):
@@ -74,9 +111,9 @@ class ComplexEntity(Entity):
     children: List[ChildEntity] = []
     
 # Create corresponding ORM models
-class SimpleEntityORM(EntityBase):
+class SimpleEntityORM(TestEntityBase):
     """ORM model for SimpleEntity."""
-    __tablename__ = "simpleentityorm"
+    __tablename__ = "test_simpleentityorm"
     
     name: Mapped[str] = mapped_column(String(100))
     value: Mapped[int] = mapped_column(Integer)
@@ -113,12 +150,12 @@ class SimpleEntityORM(EntityBase):
             value=entity.value
         )
 
-class NestedEntityORM(EntityBase):
+class NestedEntityORM(TestEntityBase):
     """ORM model for NestedEntity."""
-    __tablename__ = "nestedentityorm"
+    __tablename__ = "test_nestedentityorm"
     
     title: Mapped[str] = mapped_column(String(100))
-    nested_id: Mapped[Optional[int]] = mapped_column(ForeignKey("simpleentityorm.id"), nullable=True)
+    nested_id: Mapped[Optional[int]] = mapped_column(ForeignKey("test_simpleentityorm.id"), nullable=True)
     nested_orm: Mapped[Optional[SimpleEntityORM]] = relationship(SimpleEntityORM)
     
     def to_entity(self) -> NestedEntity:
@@ -165,9 +202,9 @@ class NestedEntityORM(EntityBase):
                     SimpleEntityORM.ecs_id == entity.nested.ecs_id
                 ).first()
 
-class ChildEntityORM(EntityBase):
+class ChildEntityORM(TestEntityBase):
     """ORM model for ChildEntity."""
-    __tablename__ = "childentityorm"
+    __tablename__ = "test_childentityorm"
     
     name: Mapped[str] = mapped_column(String(100))
     data: Mapped[str] = mapped_column(String(255))
@@ -205,15 +242,16 @@ class ChildEntityORM(EntityBase):
         )
 
 # Create association table for many-to-many relationship
-parent_child_association = create_association_table(
-    "parent_child_assoc", 
-    "parententityorm", 
-    "childentityorm"
+parent_child_association = Table(
+    "test_parent_child_assoc",
+    test_metadata,
+    Column("parent_id", Integer, ForeignKey("test_parententityorm.id")),
+    Column("child_id", Integer, ForeignKey("test_childentityorm.id"))
 )
 
-class ParentEntityORM(EntityBase):
+class ParentEntityORM(TestEntityBase):
     """ORM model for ParentEntity."""
-    __tablename__ = "parententityorm"
+    __tablename__ = "test_parententityorm"
     
     name: Mapped[str] = mapped_column(String(100))
     children_orm: Mapped[List[ChildEntityORM]] = relationship(
@@ -269,22 +307,31 @@ class ParentEntityORM(EntityBase):
                 if child_orm:
                     self.children_orm.append(child_orm)
 
-class ComplexEntityORM(EntityBase):
+class ComplexEntityORM(TestEntityBase):
     """ORM model for ComplexEntity."""
-    __tablename__ = "complexentityorm"
+    __tablename__ = "test_complexentityorm"
     
     name: Mapped[str] = mapped_column(String(100))
     
     # One-to-one relationships
-    simple_id: Mapped[Optional[int]] = mapped_column(ForeignKey("simpleentityorm.id"), nullable=True)
-    nested_id: Mapped[Optional[int]] = mapped_column(ForeignKey("nestedentityorm.id"), nullable=True)
+    simple_id: Mapped[Optional[int]] = mapped_column(ForeignKey("test_simpleentityorm.id"), nullable=True)
+    nested_id: Mapped[Optional[int]] = mapped_column(ForeignKey("test_nestedentityorm.id"), nullable=True)
     
     # Relationship properties
     simple_orm: Mapped[Optional[SimpleEntityORM]] = relationship(SimpleEntityORM)
     nested_orm: Mapped[Optional[NestedEntityORM]] = relationship(NestedEntityORM)
+    
+    # Create a specific association table for the complex-child relationship
+    complex_child_association = Table(
+        "test_complex_child_assoc",
+        test_metadata,
+        Column("complex_id", Integer, ForeignKey("test_complexentityorm.id")),
+        Column("child_id", Integer, ForeignKey("test_childentityorm.id"))
+    )
+    
     children_orm: Mapped[List[ChildEntityORM]] = relationship(
         ChildEntityORM, 
-        secondary=create_association_table("complex_child_assoc", "complexentityorm", "childentityorm")
+        secondary=complex_child_association
     )
     
     def to_entity(self) -> ComplexEntity:
@@ -372,7 +419,7 @@ class TestEntityConversion(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:")
         
         # Create all tables
-        Base.metadata.create_all(self.engine)
+        TestBase.metadata.create_all(self.engine)
         
         # Create a session
         self.Session = sessionmaker(bind=self.engine)
@@ -391,7 +438,7 @@ class TestEntityConversion(unittest.TestCase):
     def tearDown(self):
         """Clean up after tests."""
         self.session.close()
-        Base.metadata.drop_all(self.engine)
+        TestBase.metadata.drop_all(self.engine)
     
     def test_simple_entity_conversion(self):
         """Test conversion of a simple entity with primitive fields."""

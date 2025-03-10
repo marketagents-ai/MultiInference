@@ -14,18 +14,22 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from minference.ecs.entity import Entity
+from minference.ecs.entity import Entity, EntityRegistry
 from minference.threads.models import (
     ChatMessage, ChatThread, GeneratedJsonObject, LLMConfig, 
     RawOutput, ProcessedOutput, StructuredTool, SystemPrompt, 
-    CallableTool, Usage
+    CallableTool, Usage, MessageRole
 )
 
-from tests.sql.sql_thread_models import (
+from minference.threads.sql_models import (
     Base, ChatMessageSQL, ChatThreadSQL, GeneratedJsonObjectSQL, 
     LLMConfigSQL, RawOutputSQL, ProcessedOutputSQL, StructuredToolSQL, 
     SystemPromptSQL, CallableToolSQL, UsageSQL, ENTITY_MODEL_MAP
 )
+
+# Add EntityRegistry to __main__ for entity methods
+import sys
+sys.modules['__main__'].__dict__['EntityRegistry'] = EntityRegistry
 
 # Setup SQLite in-memory database for testing
 @pytest.fixture
@@ -535,26 +539,82 @@ def test_chat_thread_complex_conversion(session):
     
     # Convert to ORM
     orm_model = ChatThreadSQL.from_entity(chat_thread)
-    orm_model.handle_relationships(chat_thread)
+    # Create orm_objects dict for the relationships
+    orm_objects = {}
     
-    # Save all entities to database
-    session.add(SystemPromptSQL.from_entity(system_prompt))
-    session.add(LLMConfigSQL.from_entity(llm_config))
-    session.add(CallableToolSQL.from_entity(callable_tool))
-    session.add(StructuredToolSQL.from_entity(structured_tool))
+    # Save all entities to database and populate orm_objects with the created models
+    system_prompt_sql = SystemPromptSQL.from_entity(system_prompt)
+    llm_config_sql = LLMConfigSQL.from_entity(llm_config) 
+    callable_tool_sql = CallableToolSQL.from_entity(callable_tool)
+    structured_tool_sql = StructuredToolSQL.from_entity(structured_tool)
+    
+    # Create message SQL models
+    user_message_sql = ChatMessageSQL.from_entity(user_message)
+    user_message_sql.chat_thread_id = chat_thread.ecs_id  # Set chat_thread_id explicitly
+    
+    assistant_message_sql = ChatMessageSQL.from_entity(assistant_message)
+    assistant_message_sql.chat_thread_id = chat_thread.ecs_id  # Set chat_thread_id explicitly
+    
+    tool_message_sql = ChatMessageSQL.from_entity(tool_message)
+    tool_message_sql.chat_thread_id = chat_thread.ecs_id  # Set chat_thread_id explicitly
+    
+    # Add all SQL models to orm_objects for relationship handling
+    orm_objects[system_prompt.ecs_id] = system_prompt_sql
+    orm_objects[llm_config.ecs_id] = llm_config_sql
+    orm_objects[callable_tool.ecs_id] = callable_tool_sql
+    orm_objects[structured_tool.ecs_id] = structured_tool_sql
+    orm_objects[user_message.ecs_id] = user_message_sql
+    orm_objects[assistant_message.ecs_id] = assistant_message_sql
+    orm_objects[tool_message.ecs_id] = tool_message_sql
+    
+    # Add all to session
+    session.add(system_prompt_sql)
+    session.add(llm_config_sql)
+    session.add(callable_tool_sql)
+    session.add(structured_tool_sql)
+    
+    # We need to explicitly set the chat_thread relationship
+    orm_model.messages = [user_message_sql, assistant_message_sql, tool_message_sql]
+    user_message_sql.chat_thread = orm_model
+    assistant_message_sql.chat_thread = orm_model
+    tool_message_sql.chat_thread = orm_model
+    
+    session.add(user_message_sql)
+    session.add(assistant_message_sql)
+    session.add(tool_message_sql)
     session.add(orm_model)
+    
+    # Set relationships after adding all entities to the session
+    orm_model.handle_relationships(chat_thread, session, orm_objects)
+    
+    # Handle message relationships
+    user_message_sql.handle_relationships(user_message, session, orm_objects)
+    assistant_message_sql.handle_relationships(assistant_message, session, orm_objects)
+    tool_message_sql.handle_relationships(tool_message, session, orm_objects)
+    
+    # Now commit
     session.commit()
     
-    # Retrieve from database
-    retrieved = session.query(ChatThreadSQL).filter_by(ecs_id=chat_thread.ecs_id).first()
+    # Retrieve from database with explicit join loading for messages
+    from sqlalchemy.orm import joinedload
+    retrieved = session.query(ChatThreadSQL).options(
+        joinedload(ChatThreadSQL.messages),  # Explicitly load messages
+        joinedload(ChatThreadSQL.system_prompt),
+        joinedload(ChatThreadSQL.llm_config),
+        joinedload(ChatThreadSQL.tools)
+    ).filter_by(ecs_id=chat_thread.ecs_id).first()
     assert retrieved is not None
+    
+    # Verify messages were loaded
+    print(f"Retrieved messages: {retrieved.messages}")
+    assert len(retrieved.messages) > 0
     
     # Convert back to entity
     reconstructed = retrieved.to_entity()
     
     # Check basic properties
-    assert reconstructed.title == chat_thread.title
-    assert reconstructed.metadata == chat_thread.metadata
+    assert reconstructed.name == chat_thread.name  # Using 'name' instead of 'title'
+    # metadata is no longer directly exposed
     assert reconstructed.ecs_id == chat_thread.ecs_id
     
     # Check system prompt
@@ -563,7 +623,7 @@ def test_chat_thread_complex_conversion(session):
     
     # Check LLM config
     assert reconstructed.llm_config is not None
-    assert reconstructed.llm_config.provider == llm_config.provider
+    assert reconstructed.llm_config.client == llm_config.client  # Using 'client' instead of 'provider'
     assert reconstructed.llm_config.model == llm_config.model
     
     # Check tools
@@ -572,21 +632,21 @@ def test_chat_thread_complex_conversion(session):
     assert callable_tool.name in tool_names
     assert structured_tool.name in tool_names
     
-    # Check messages
-    assert len(reconstructed.messages) == 3
+    # Check messages - the property is now called 'history'
+    assert len(reconstructed.history) == 3
     
     # Extract message roles
-    message_roles = [msg.role for msg in reconstructed.messages]
+    message_roles = [msg.role.value for msg in reconstructed.history]
     assert "user" in message_roles
     assert "assistant" in message_roles
     assert "tool" in message_roles
     
     # Check message relationships
-    for msg in reconstructed.messages:
-        if msg.role == "assistant":
+    for msg in reconstructed.history:
+        if msg.role == MessageRole.assistant:
             # Assistant message should have parent (user message)
             assert msg.parent_message_uuid is not None
-        if msg.role == "tool":
+        if msg.role == MessageRole.tool:
             # Tool message should have tool_uuid
             assert msg.tool_uuid is not None
 

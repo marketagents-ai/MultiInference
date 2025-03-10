@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
 
-from tests.sql.sql_thread_models import Base
+from minference.threads.sql_models import Base
 
 @pytest.fixture
 def sql_engine():

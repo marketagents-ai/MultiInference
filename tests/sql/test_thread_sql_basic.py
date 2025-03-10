@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from tests.sql.sql_thread_models import (
+from minference.threads.sql_models import (
     Base, ChatThreadSQL, ChatMessageSQL, SystemPromptSQL, LLMConfigSQL, 
     CallableToolSQL, StructuredToolSQL, UsageSQL
 )

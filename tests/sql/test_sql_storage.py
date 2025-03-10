@@ -17,6 +17,11 @@ from copy import deepcopy
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
+# Add the project root to sys.path for relative imports in tests
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 # Import the test entities and ORM models
 from tests.sql.test_sql_entity_conversion import (
     SimpleEntity, SimpleEntityORM,
@@ -24,12 +29,13 @@ from tests.sql.test_sql_entity_conversion import (
     ParentEntity, ParentEntityORM, 
     ChildEntity, ChildEntityORM,
     ComplexEntity, ComplexEntityORM,
-    Base, compare_entities
+    TestBase as Base, compare_entities
 )
 
 # Import the entity storage implementation
+from minference.ecs.entity import Entity, EntityRegistry
 from tests.sql.sql_entity import (
-    Entity, EntityBase, BaseEntitySQL, SqlEntityStorage, EntityRegistry,
+    EntityBase, BaseEntitySQL, SqlEntityStorage,
     create_association_table
 )
 

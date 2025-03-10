@@ -21,11 +21,15 @@ from minference.threads.models import (
     CallableTool, StructuredTool
 )
 
-# Import SqlEntityStorage and SQL models from the same directory
-from tests.sql.sql_entity import (
-    EntityRegistry, SqlEntityStorage, entity_tracer
-)
-from tests.sql.sql_thread_models import (
+# Import SqlEntityStorage and SQL models
+from minference.ecs.entity import EntityRegistry, entity_tracer
+import sys
+import os
+
+# Add the project root to sys.path for relative imports in tests
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from tests.sql.sql_entity import SqlEntityStorage
+from minference.threads.sql_models import (
     ENTITY_MODEL_MAP, ChatThreadSQL, ChatMessageSQL
 )
 
@@ -39,9 +43,9 @@ def sql_engine():
         echo=True,  # Turn on SQL logging to see what's happening
     )
     
-    # Import the Base from both sql_entity and sql_thread_models to create all tables
+    # Import the Base from sql_entity and sql_models to create all tables
     from tests.sql.sql_entity import Base as EntityBase, BaseEntitySQL
-    from tests.sql.sql_thread_models import Base as ThreadBase
+    from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
     EntityBase.metadata.create_all(engine)
@@ -166,7 +170,7 @@ def test_chat_thread_registration(setup_sql_storage):
 
 def test_entity_tracer_with_sql_storage(setup_sql_storage):
     """Test that the entity_tracer decorator works with SQL storage."""
-    from tests.sql.sql_entity import entity_tracer
+    from minference.ecs.entity import entity_tracer
     
     # Define a calculator function
     def simple_add(x: float, y: float) -> float:
@@ -228,7 +232,7 @@ def test_entity_tracer_with_sql_storage(setup_sql_storage):
 @pytest.mark.asyncio
 async def test_async_entity_tracer(setup_sql_storage):
     """Test that the entity_tracer decorator works with async functions."""
-    from tests.sql.sql_entity import entity_tracer
+    from minference.ecs.entity import entity_tracer
     
     # Define an async function to use as a tool
     async def async_calculator(x: float, y: float) -> float:
