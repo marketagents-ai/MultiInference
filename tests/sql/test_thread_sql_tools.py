@@ -34,8 +34,8 @@ def engine():
         echo=True,  # Turn on SQL logging
     )
     
-    # Import the Base from entity.py and sql_models.py to create all tables
-    from minference.ecs.entity import BaseEntitySQL, Base as EntityBase_Base
+    # Import the Base from storage.py and sql_models.py to create all tables
+    from minference.ecs.storage import BaseEntitySQL, Base as EntityBase_Base
     from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
@@ -74,7 +74,7 @@ def session_factory(session):
 @pytest.fixture
 def setup_sql_storage(session_factory):
     """Configure EntityRegistry to use SQL storage."""
-    from minference.ecs.entity import SqlEntityStorage
+    from minference.ecs.storage import SqlEntityStorage
     from minference.threads.sql_models import ENTITY_MODEL_MAP
     
     # Create SQL storage with the session factory and entity mappings
