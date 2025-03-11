@@ -52,28 +52,12 @@ def engine():
     )
     
     # Import the Base from entity.py and sql_models.py to create all tables
-    from minference.ecs.entity import BaseEntitySQL
-    from minference.threads.sql_models import Base as ThreadBase, EntityBase
-    
-    # Need to create a Base instance with BaseEntitySQL
-    EntityBase = declarative_base()
-    
-    # Create a table for BaseEntitySQL
-    class BaseEntitySQLTable(EntityBase):
-        __tablename__ = "baseentitysql"
-        
-        id = mapped_column(Integer, primary_key=True, autoincrement=True)
-        ecs_id = mapped_column(String(36), nullable=False, index=True, unique=True)
-        lineage_id = mapped_column(String(36), nullable=False, index=True)
-        parent_id = mapped_column(String(36), nullable=True, index=True)
-        created_at = mapped_column(DateTime(timezone=True), nullable=False)
-        old_ids = mapped_column(JSON, nullable=False, default=list)
-        class_name = mapped_column(String(255), nullable=False)
-        data = mapped_column(JSON, nullable=False)
+    from minference.ecs.entity import BaseEntitySQL, Base as EntityBase_Base
+    from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
-    EntityBase.metadata.create_all(engine)
     ThreadBase.metadata.create_all(engine)
+    EntityBase_Base.metadata.create_all(engine)
     
     return engine
 

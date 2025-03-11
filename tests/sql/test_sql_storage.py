@@ -33,8 +33,9 @@ from tests.sql.test_sql_entity_conversion import (
 )
 
 # Import the entity storage implementation
-from minference.ecs.entity import Entity, EntityRegistry, create_association_table, SqlEntityStorage, BaseEntitySQL
-from minference.threads.sql_models import EntityBase
+from minference.ecs.entity import Entity, EntityRegistry, create_association_table, SqlEntityStorage, BaseEntitySQL, Base as EntityBase_Base, EntityBase
+# We don't need to import EntityBase from sql_models since we now have it in entity.py
+# from minference.threads.sql_models import EntityBase
 
 # Add EntityRegistry to __main__ for entity methods
 import sys
@@ -48,26 +49,9 @@ class TestSqlEntityStorage(unittest.TestCase):
         # Create in-memory SQLite database
         self.engine = create_engine("sqlite:///:memory:")
         
-        # Create a Base instance with BaseEntitySQL
-        from sqlalchemy.orm import declarative_base
-        Base_test = declarative_base()
-        
-        # Create a table for BaseEntitySQL
-        class BaseEntitySQLTable(Base_test):
-            __tablename__ = "baseentitysql"
-            
-            id = mapped_column(Integer, primary_key=True, autoincrement=True)
-            ecs_id = mapped_column(Uuid, nullable=False, index=True, unique=True)
-            lineage_id = mapped_column(Uuid, nullable=False, index=True)
-            parent_id = mapped_column(Uuid, nullable=True, index=True)
-            created_at = mapped_column(DateTime(timezone=True), nullable=False)
-            old_ids = mapped_column(JSON, nullable=False, default=list)
-            class_name = mapped_column(String(255), nullable=False)
-            data = mapped_column(JSON, nullable=False)
-        
-        # Create all tables
-        Base_test.metadata.create_all(self.engine)
+        # Create all tables - including both test tables and the BaseEntitySQL table
         Base.metadata.create_all(self.engine)
+        EntityBase_Base.metadata.create_all(self.engine)
         
         # Create a session factory
         self.Session = sessionmaker(bind=self.engine)

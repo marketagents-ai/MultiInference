@@ -30,7 +30,7 @@ from minference.clients.requests import (
     create_litellm_completion_config,
     create_openrouter_completion_config
 )
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 
 
 class RequestLimits(Entity):

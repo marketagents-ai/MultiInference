@@ -30,6 +30,7 @@ from minference.threads.models import (
     RawOutput, ProcessedOutput, LLMClient, ResponseFormat, MessageRole
 )
 from minference.ecs.entity import Entity
+from minference.ecs.storage import BaseEntitySQL
 from minference.threads.inference import RequestLimits
 
 # Create SQLAlchemy Base
@@ -64,54 +65,7 @@ chat_thread_tools = Table(
     Column("tool_id", Uuid, ForeignKey("tool.ecs_id"), primary_key=True),
 )
 
-# Add this class after the Base definition but before other entity classes
-class BaseEntitySQL(EntityBase):
-    """SQLAlchemy model for generic entity storage."""
-    __tablename__ = "base_entity"
-    
-    # Additional fields needed for storing any entity
-    entity_class = mapped_column(String(100), nullable=False)
-    data = mapped_column(JSON, nullable=True)
-    
-    __mapper_args__ = {
-        "polymorphic_identity": "base_entity",
-    }
-    
-    @classmethod
-    def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
-        """Convert from Entity to SQL model."""
-        # Convert UUID objects to strings for JSON serialization
-        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
-        
-        return cls(
-            ecs_id=entity.ecs_id,
-            lineage_id=entity.lineage_id,
-            parent_id=entity.parent_id,
-            created_at=entity.created_at,
-            old_ids=str_old_ids,
-            entity_class=f"{entity.__class__.__module__}.{entity.__class__.__name__}",
-            data=entity.entity_dump(),
-            entity_type="base_entity"
-        )
-    
-    def to_entity(self) -> Entity:
-        """Convert from SQL model to Entity."""
-        # Import dynamically to avoid circular imports
-        from minference.ecs.entity import dynamic_import
-        
-        # Get the entity class
-        entity_class = dynamic_import(self.entity_class)
-        
-        # Create the entity from stored data
-        return entity_class.model_validate({
-            "ecs_id": self.ecs_id,
-            "lineage_id": self.lineage_id,
-            "parent_id": self.parent_id,
-            "created_at": self.created_at,
-            "old_ids": [UUID(uid) for uid in self.old_ids] if self.old_ids else [],
-            "from_storage": True,
-            **self.data
-        })
+# BaseEntitySQL is now imported from minference.ecs.entity
 
 class ChatThreadSQL(EntityBase):
     """SQLAlchemy model for ChatThread entities."""
@@ -153,6 +107,51 @@ class ChatThreadSQL(EntityBase):
         tools = [tool.to_entity() for tool in self.tools] if self.tools else []
         forced_output = self.forced_output.to_entity() if self.forced_output else None
         
+        # Ensure messages relationship is eagerly loaded for ChatThread
+        from sqlalchemy.orm import Session
+        from sqlalchemy.orm import joinedload
+        from __main__ import EntityRegistry
+        
+        # If no messages loaded but we have chat_thread_id, try to load them explicitly
+        if not hasattr(self, 'messages') or not self.messages:
+            print(f"No messages found for thread {self.ecs_id} in self.messages, trying to load")
+            # Try to load explicitly
+            if EntityRegistry._storage and hasattr(EntityRegistry._storage, '_session_factory'):
+                session = EntityRegistry._storage._session_factory()
+                try:
+                    # Specifically query for messages related to this thread
+                    # Get messages for this thread ID
+                    messages_orm = session.query(ChatMessageSQL).filter(
+                        ChatMessageSQL.chat_thread_id == self.ecs_id
+                    ).all()
+                    
+                    # Also try to find messages for any previous versions of this thread
+                    # This handles the case where messages were added to a previous thread version
+                    # and then the thread was forked (got a new ecs_id)
+                    if hasattr(self, 'old_ids') and self.old_ids:
+                        print(f"Also checking for messages with thread IDs in old_ids: {self.old_ids}")
+                        from uuid import UUID as UUIDType
+                        
+                        for old_id in self.old_ids:
+                            if isinstance(old_id, str):
+                                old_thread_id = old_id
+                            else:
+                                old_thread_id = str(old_id)
+                            
+                            # Try finding messages linked to an old version of this thread
+                            old_messages = session.query(ChatMessageSQL).filter(
+                                ChatMessageSQL.chat_thread_id == UUIDType(old_thread_id)
+                            ).all()
+                            
+                            if old_messages:
+                                print(f"Found {len(old_messages)} messages for old thread ID {old_thread_id}")
+                                messages_orm.extend(old_messages)
+                    if messages_orm:
+                        print(f"Found {len(messages_orm)} messages directly related to thread {self.ecs_id}")
+                        self.messages = messages_orm
+                finally:
+                    session.close()
+        
         # Make sure we have a valid LLMConfig (required)
         if llm_config is None:
             # Create a minimal default LLMConfig
@@ -161,16 +160,67 @@ class ChatThreadSQL(EntityBase):
         
         # Convert messages if available
         history = []
-        if self.messages:
+        print(f"Converting ChatThreadSQL {self.ecs_id} to Entity, messages count: {len(self.messages) if self.messages else 0}")
+        if hasattr(self, 'messages') and self.messages:
+            print(f"Message IDs: {[msg.ecs_id for msg in self.messages]}")
             history = [msg.to_entity() for msg in self.messages]
+        else:
+            print(f"No messages found for thread {self.ecs_id}, attempting to load from database")
+            from sqlalchemy.orm import Session
+            from sqlalchemy import create_engine
+            from __main__ import EntityRegistry
+            
+            # Get a session to load messages
+            storage_info = EntityRegistry.get_registry_status()
+            if storage_info.get('storage') == 'sql':
+                session = EntityRegistry._storage._session_factory()
+                try:
+                    # Query messages directly from the database with this thread's ID
+                    from sqlalchemy.orm import joinedload
+                    print(f"Querying messages for chat_thread_id={self.ecs_id}")
+                    messages = []
+                    
+                    # Try all potential ways the relationship might be stored
+                    by_chat_thread_id = session.query(ChatMessageSQL).filter(
+                        ChatMessageSQL.chat_thread_id == self.ecs_id
+                    ).all()
+                    if by_chat_thread_id:
+                        print(f"Found {len(by_chat_thread_id)} messages by chat_thread_id")
+                        messages.extend(by_chat_thread_id)
+                        
+                    # Also get any messages in the messages relationship
+                    thread_sql = session.query(ChatThreadSQL).options(
+                        # Type ignore directive is needed here because SQLAlchemy supports string
+                        # attribute names but the type checker doesn't recognize this pattern
+                        joinedload("messages")  # type: ignore
+                    ).filter(ChatThreadSQL.ecs_id == self.ecs_id).first()
+                    
+                    if thread_sql and thread_sql.messages:
+                        print(f"Found {len(thread_sql.messages)} messages in thread_sql.messages relationship")
+                        messages.extend([m for m in thread_sql.messages if m.ecs_id not in [msg.ecs_id for msg in messages]])
+                        
+                    # Deduplicate messages
+                    unique_messages = {}
+                    for msg in messages:
+                        unique_messages[msg.ecs_id] = msg
+                    messages = list(unique_messages.values())
+                    
+                    if messages:
+                        print(f"Found {len(messages)} messages for thread {self.ecs_id} in database")
+                        history = [msg.to_entity() for msg in messages]
+                    else:
+                        print(f"No messages found in database for thread {self.ecs_id}")
+                finally:
+                    session.close()
         
         # Convert old_ids strings back to UUID objects
+        from uuid import UUID as UUIDType
         uuid_old_ids = []
         if self.old_ids:
             for old_id in self.old_ids:
                 if isinstance(old_id, str):
-                    uuid_old_ids.append(UUID(old_id))
-                elif isinstance(old_id, UUID):
+                    uuid_old_ids.append(UUIDType(old_id))
+                elif isinstance(old_id, UUIDType):
                     uuid_old_ids.append(old_id)
             
         return ChatThread(
@@ -269,6 +319,22 @@ class ChatThreadSQL(EntityBase):
                     if tool_orm:
                         tools.append(tool_orm)
             self.tools = tools
+            
+        # Handle history relationship (messages)
+        if entity.history:
+            messages = []
+            for message in entity.history:
+                if message.ecs_id in orm_objects:
+                    messages.append(orm_objects[message.ecs_id])
+                else:
+                    # Try to find in database
+                    message_orm = session.query(ChatMessageSQL).filter(
+                        ChatMessageSQL.ecs_id == message.ecs_id
+                    ).first()
+                    if message_orm:
+                        messages.append(message_orm)
+            self.messages = messages
+            print(f"Added {len(messages)} messages to ChatThreadSQL {self.ecs_id}")
 
 class ChatMessageSQL(EntityBase):
     """SQLAlchemy model for ChatMessage entities."""
@@ -370,6 +436,9 @@ class ChatMessageSQL(EntityBase):
         if entity.chat_thread_id:
             if entity.chat_thread_id in orm_objects:
                 self.chat_thread = orm_objects[entity.chat_thread_id]
+                # Make sure chat_thread_id is set correctly
+                print(f"Setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+                self.chat_thread_id = entity.chat_thread_id
             else:
                 # Try to find in database
                 chat_thread = session.query(ChatThreadSQL).filter(
@@ -377,6 +446,13 @@ class ChatMessageSQL(EntityBase):
                 ).first()
                 if chat_thread:
                     self.chat_thread = chat_thread
+                    # Make sure chat_thread_id is set correctly
+                    print(f"Setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+                    self.chat_thread_id = entity.chat_thread_id
+                else:
+                    # Even if we can't find the thread, make sure the ID is set
+                    print(f"Thread not found, but setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+                    self.chat_thread_id = entity.chat_thread_id
         
         # Handle parent_message relationship
         if entity.parent_message_uuid:

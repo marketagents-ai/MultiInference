@@ -221,10 +221,128 @@ All 32 tests in the SQL module are now passing. This includes:
 
 ### Next Steps
 
-1. Improve type safety in the SqlEntityStorage class, particularly for the _get_orm_class method
-2. Evaluate performance with larger datasets and optimize as needed
-3. Remove SQLModel from requirements.txt since it's no longer needed
-4. Update examples and documentation to reflect the pure SQLAlchemy approach
+1. **Fix Sub-Entity Registration**: The SqlEntityStorage implementation doesn't properly register sub-entities when registering a parent entity. This breaks the fundamental model of the entity component system.
+
+2. **Fix EntityTracer for SQL Storage**: The entity_tracer needs to be modified to properly handle registering sub-entities in SQL storage.
+
+3. **Address Session Management**: Current implementation has SQLAlchemy session management issues when handling relationships between entities.
+
+4. **Update Documentation**: Add explicit warnings and examples for the current requirement to manually register sub-entities with SQL storage.
+
+5. **Improve type safety in the SqlEntityStorage class**, particularly for the _get_orm_class method
+
+6. **Evaluate performance with larger datasets** and optimize as needed
+
+7. **Remove SQLModel from requirements.txt** since it's no longer needed
+
+## Sub-Entity Registration Fix Plan (March 11, 2025)
+
+Based on our investigation of the sub-entity registration issue in SQL storage, we've identified the core problem and have developed a plan to fix it:
+
+### Current Implementation Issues
+
+1. **Dependency Graph Usage**: The `_store_entity_tree` method in `SqlEntityStorage` finds sub-entities using `entity.get_sub_entities()` but doesn't properly register them in the SQL database.
+
+2. **Storage Behavior Inconsistency**: The in-memory storage automatically handles sub-entity registration, but the SQL storage implementation doesn't maintain the same behavior.
+
+3. **Manual Registration Requirement**: Currently, developers must manually register both the parent entity and any sub-entities:
+   ```python
+   message = thread.add_user_message()
+   EntityRegistry.register(message)  # Explicit sub-entity registration
+   EntityRegistry.register(thread)   # Parent entity registration
+   ```
+
+### Fix Implementation Plan
+
+We will modify the `_store_entity_tree` method in `SqlEntityStorage` to properly handle sub-entity registration by:
+
+1. **Using Dependency Graph**: We'll leverage the entity dependency graph to find all nested entities:
+   ```python
+   # Initialize dependency graph if not already done
+   if entity.deps_graph is None:
+       entity.initialize_deps_graph()
+   
+   # Get all sub-entities
+   sub_entities = entity.get_sub_entities()
+   ```
+
+2. **Topological Sorting**: Process entities in dependency order (sub-entities first):
+   ```python
+   # Process all entities in topological order
+   sorted_entities = [entity] + list(sub_entities)
+   ```
+
+3. **Batch Storage**: Store all entities in a single transaction:
+   ```python
+   # Create session if needed
+   own_session = session is None
+   if own_session:
+       session = self._session_factory()
+   
+   try:
+       # Store all entities with proper relationship handling
+       for current_entity in sorted_entities:
+           self._store_entity(current_entity, session)
+           
+       # Commit transaction
+       if own_session:
+           session.commit()
+           
+       return entity
+   except Exception as e:
+       if own_session:
+           session.rollback()
+       raise
+   finally:
+       if own_session:
+           session.close()
+   ```
+
+4. **Relationship Preservation**: Ensure foreign key relationships are properly maintained:
+   ```python
+   # Phase 2: Handle relationships
+   for current_entity in sorted_entities:
+       orm_obj = orm_objects.get(current_entity.ecs_id)
+       if orm_obj and hasattr(orm_obj, 'handle_relationships'):
+           orm_obj.handle_relationships(current_entity, session, orm_objects)
+   ```
+
+### Entity Tracer Enhancement
+
+We will also improve the `entity_tracer` decorator to automatically register newly created entities:
+
+```python
+@wraps(func)
+def wrapper(self, *args, **kwargs):
+    # ... existing tracer code ...
+    result = func(self, *args, **kwargs)
+    
+    # Enhancement: Auto-register returned entity if it's newly created
+    if isinstance(result, Entity) and not EntityRegistry.has_entity(result.ecs_id):
+        EntityRegistry.register(result)
+        
+    return result
+```
+
+### Expected Outcomes
+
+After implementing these changes:
+
+1. Sub-entities will be automatically registered when their parent entity is registered
+2. Developers will no longer need to explicitly register sub-entities
+3. SQL storage will behave consistently with in-memory storage
+4. The requirement for manual sub-entity registration will be eliminated
+5. Entity relationships will be properly maintained in SQL storage
+
+These changes will restore the fundamental abstraction of the entity component system - automatic tracking and persistence of entity relationships.
+
+## Current Task Status (March 11, 2025)
+
+The entity.py file is quite large (over 23,000 tokens) which makes it difficult to work with in the current environment. 
+
+**Next Action**: User will separate entity.py into multiple smaller files to make it more manageable. This will simplify the process of implementing the sub-entity registration fix. 
+
+In the meantime, we are waiting for this refactoring to be completed before proceeding with the implementation of the fixes described above.
 
 ## Completed SQLAlchemy Migration
 
@@ -876,6 +994,51 @@ This would provide better visibility into system behavior while maintaining good
 - Current branch: iri_claude_10_4_alchemy
 - Main branch: main
 
+## Critical Issue: Sub-Entity Registration in SQL Storage (March 11, 2025)
+
+We've identified a critical design issue with how sub-entities are registered in SQL storage mode:
+
+### The Problem: Sub-Entity Registration Failure
+
+When using SqlEntityStorage, sub-entities (like messages added to a thread) aren't properly being registered automatically. This manifests as:
+
+1. Thread is created and registered successfully
+2. Message is added to thread.history
+3. When the thread is registered again, the dependency graph correctly finds the sub-entities
+4. BUT the sub-entities aren't automatically registered in the SQL database
+5. When retrieving the thread later, the sub-entities are missing
+
+We initially went down a rabbit hole of trying to fix this by:
+1. Modifying SQL query logic to find messages across different thread IDs
+2. Adding explicit message registration in test code
+3. Adding complex debug logging to track entity registration
+
+### Root Cause Analysis
+
+The real issue is that **the entity_tracer and SqlEntityStorage don't properly register sub-entities**:
+
+1. The `sql_root` flag is set to `False` by default, disabling auto-registration for most entities
+2. The `_store_entity_tree` method should be using the dependency graph to find and register all sub-entities
+3. When a parent entity is forked (gets a new ID), the sub-entities' references (like chat_thread_id) don't get updated
+
+### Proper Solution
+
+We should:
+
+1. Fix the `_store_entity_tree` method to properly register all sub-entities found in the dependency graph
+2. Ensure sub-entity references (foreign keys) are updated when parent entities are forked
+3. Consider automatically setting `sql_root=True` for all entities 
+4. Add comprehensive tests specifically for nested entity registration and retrieval
+
+### Lessons Learned
+
+1. **Focus on Core Abstractions**: The fix should be at the entity registration level, not in SQL query logic
+2. **Compare Working vs. Non-Working Cases**: We should have examined the in-memory tests that work correctly
+3. **Test Specific Functionality**: We should isolate the sub-entity registration behavior in specific tests
+4. **Avoid Premature Optimization**: We spent too much time on SQL query improvements before fixing the core issue
+
+This issue is critical because it defeats the entire purpose of the entity component system - to automatically manage entity relationships and versioning.
+
 ## Recent Progress (March 11, 2025)
 
 We've made significant progress on SQL test coverage, specifically:
@@ -1064,3 +1227,169 @@ The most practical approach is to combine solutions 1 and 2: maintain the Protoc
 4. **Dependency Management**: Circular dependencies should be broken with careful interface design, not just by moving code around
 
 This challenge highlights the tension between maintaining clean architecture with proper separation of concerns while still providing practical implementation details needed for the database layer.
+
+## Circular Import Resolution (March 11, 2025)
+
+We've successfully resolved a critical circular import issue between entity.py and sql_models.py:
+
+1. **The Problem**:
+   - entity.py defined BaseEntitySQL as a Protocol (interface)
+   - sql_models.py provided a concrete implementation of this Protocol
+   - This worked for type checking but caused errors when trying to use it in SQL queries
+   - SQLAlchemy needs a concrete model class, not a Protocol
+
+2. **Our Solution**:
+   - Moved the concrete implementation of BaseEntitySQL into entity.py
+   - Removed the Protocol version entirely
+   - Updated sql_models.py to import the concrete version from entity.py
+   - Added proper imports in entity.py for SQLAlchemy dependencies
+   - Created the EntityBase class directly in entity.py
+
+3. **Benefits**:
+   - Eliminated circular import dependencies
+   - Made code more maintainable with clearer class ownership
+   - Fixed SQLAlchemy queries that were failing with Protocol errors
+   - Ensures correct table creation across all tests
+
+4. **Current Status**:
+   - **ALL TESTS PASSING**: 179 tests across the entire codebase are now passing
+     - 72 tests in tests/sql/
+     - 79 tests in tests/threads_tests/
+     - 28 tests in tests/ecs_tests/
+   - Resolved all "no such table: base_entity" errors
+   - Fixed entity-to-ORM mapping tests
+
+This solution demonstrates a better approach to managing dependencies in complex ORM systems - moving shared base classes to the foundation module (entity.py) and having specialized modules import from there, rather than trying to use Protocol interfaces to break circular dependencies. 
+
+The key insight was that Protocol types are excellent for type checking but insufficient for runtime SQL operations. By consolidating the concrete implementation in the core module, we created a cleaner architecture with proper separation of concerns that still functions correctly at runtime.
+
+## Entity Tracing Investigation (March 11, 2025)
+
+We're developing a new test suite to verify tracing behavior with SQL storage for ChatThread entities, specifically testing:
+
+1. **Entity Tracing with add_user_message**: Investigating how the `@entity_tracer` decorator works when adding user messages to threads stored in SQL
+2. **Message Relationship Persistence**: Examining how message relationships (parent-child) are maintained in SQL storage
+3. **Versioning Behavior**: Testing the correct creation of new entity versions during conversations
+
+### Current Issue with Message Registration
+
+We've identified a potential issue with message registration in SQL storage:
+
+1. **Problem**: When adding messages to a ChatThread with `add_user_message()`, the messages are added to the thread's `history` array in memory, but they don't appear to be properly persisted when retrieving the thread from SQL storage.
+
+2. **Investigation**: Looking at the actual `add_user_message()` implementation:
+   ```python
+   @entity_tracer
+   def add_user_message(self) -> Optional[ChatMessage]:
+       """Add a user message to history."""
+       EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Starting add_user_message")
+       
+       if not self.new_message and self.llm_config.response_format not in [ResponseFormat.auto_tools, ResponseFormat.workflow]:
+           EntityRegistry._logger.error(f"ChatThread({self.ecs_id}): Cannot add user message - no new message content")
+           raise ValueError("Cannot add user message - no new message content")
+       elif not self.new_message:
+           EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Skipping user message - in {self.llm_config.response_format} mode")
+           return None
+
+       parent_id = self.history[-1].ecs_id if self.history else None
+       EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Creating user message with parent_id: {parent_id}")
+
+       user_message = ChatMessage(
+           role=MessageRole.user,
+           content=self.new_message,
+           chat_thread_id=self.ecs_id,
+           parent_message_uuid=parent_id
+       )
+       
+       EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Created user message({user_message.ecs_id})")
+       EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Message content: {self.new_message[:100]}...")
+       
+       self.history.append(user_message)
+       EntityRegistry._logger.info(f"ChatThread({self.ecs_id}): Added user message to history. New history length: {len(self.history)}")
+       
+       self.new_message = None
+       EntityRegistry._logger.debug(f"ChatThread({self.ecs_id}): Cleared new_message buffer")
+       
+       return user_message
+   ```
+
+3. **Expected Behavior**: The `@entity_tracer` decorator should detect the modification to the thread (appending to history) and automatically handle versioning. When retrieved from storage, the thread should include the full history.
+
+4. **Observed Behavior**: When retrieving the thread from storage after adding a message, the `history` array is empty, suggesting:
+   - The message might not be properly registered in the EntityRegistry
+   - The relationship between the thread and message might not be properly maintained in SQL storage
+   - The SQL entity-to-ORM mapping might not be handling nested entities correctly
+
+5. **Current Workaround**: We're explicitly registering both the message and the thread:
+   ```python
+   # Add a user message
+   thread.new_message = "Hello, world!"
+   message = thread.add_user_message()
+   EntityRegistry.register(message)  # Explicitly register the message
+   updated_thread = EntityRegistry.register(thread)  # Register the updated thread
+   ```
+
+### Investigation Path
+
+To resolve this issue with message registration, we need to:
+
+1. **Examine SQL Model Relationships**: Verify that the ChatThreadSQL and ChatMessageSQL models have the correct relationship definitions
+2. **Check Entity Conversion**: Review the to_entity/from_entity methods to ensure they properly handle nested entities
+3. **Trace SQL Operations**: Add logging to SqlEntityStorage to see what SQL operations occur during registration
+4. **Review Entity Tracer**: Examine how `entity_tracer` handles sub-entity modifications
+5. **Study Working Examples**: Compare with other working examples of entity relationships in SQL storage
+
+The goal is to determine if this is a fundamental issue with the SQL entity storage implementation that needs fixing, or if explicit registration of sub-entities is actually the expected pattern when using SQL storage.
+
+### Key Question: Who Should Register Sub-Entities?
+
+Looking at the `add_user_message()` implementation more closely, we observe:
+
+1. **Entity Creation**: The method creates a new ChatMessage entity
+2. **Entity Modification**: It modifies the thread by appending the message to history
+3. **@entity_tracer Decoration**: The method is decorated with @entity_tracer which should handle versioning
+4. **Return Value**: It returns the created message but does not register it
+
+The question becomes: Is the caller responsible for registering both the message and the updated thread, or should the entity system handle this automatically?
+
+Current evidence suggests a systematic issue:
+- The entity_tracer only traces changes to the entity it decorates (the thread)
+- It doesn't automatically register newly created sub-entities (the message)
+- The SQL relationship between thread and messages isn't being fully maintained without explicit registration
+
+### Performance Considerations
+
+A critical question is how much manual registration should be required:
+
+- **Ideal**: The entity system should handle all sub-entity registration automatically
+- **Current Reality**: We must explicitly register both:
+  ```python
+  message = thread.add_user_message()
+  EntityRegistry.register(message)  # Register the newly created message
+  EntityRegistry.register(thread)   # Register the updated thread
+  ```
+- **Performance Impact**: Each extra registration requires additional SQL queries
+
+### Next Steps
+
+To correct this behavior, we have two options:
+
+1. **Document the Pattern**: Accept that explicit registration of sub-entities is necessary and document this as the expected usage pattern.
+
+2. **Enhance Entity Tracer**: Modify the entity_tracer to identify and automatically register newly created sub-entities:
+   ```python
+   def entity_tracer(func):
+       @wraps(func)
+       def wrapper(self, *args, **kwargs):
+           # ... existing tracer code ...
+           result = func(self, *args, **kwargs)
+           
+           # Enhancement: Auto-register returned entity if it's a newly created one
+           if isinstance(result, Entity) and not EntityRegistry.has_entity(result.ecs_id):
+               EntityRegistry.register(result)
+               
+           return result
+       return wrapper
+   ```
+
+We'll evaluate both approaches and determine the best path forward to ensure consistent thread history persistence.
