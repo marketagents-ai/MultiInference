@@ -13,7 +13,8 @@ from uuid import UUID
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
 from minference.threads.models import (
     ChatThread, ChatMessage, MessageRole, SystemPrompt, LLMConfig, 
     CallableTool, StructuredTool, ResponseFormat, ProcessedOutput,

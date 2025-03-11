@@ -6,6 +6,7 @@ This module provides:
 2. CallableTool implementation for managing executable functions
 3. Serialization and persistence capabilities
 4. Registry integration for both entities and callables
+5. RequestLimits for API request rate limiting
 """
 from typing import Dict, Any, Optional, ClassVar, Type, TypeVar, List, Generic, Callable, Literal, Union, Tuple, Self, Annotated, cast
 from enum import Enum
@@ -897,15 +898,32 @@ class DeepSeekChatCompletion(ChatCompletion):
 
     created: int
     """The Unix timestamp (in seconds) of when the chat completion was created."""
-
+    
     model: str
     """The model used for the chat completion."""
 
     object: Literal["chat.completion"]
     """The object type, which is always `chat.completion`."""
 
-    usage: Optional[CompletionUsage] = None
-    """Usage statistics for the completion request."""
+
+class RequestLimits(Entity):
+    """
+    Configuration for API request limits.
+    Inherits from Entity for UUID handling and registry integration.
+    """
+    max_requests_per_minute: int = Field(
+        default=50,
+        description="The maximum number of requests per minute for the API"
+    )
+    max_tokens_per_minute: int = Field(
+        default=100000,
+        description="The maximum number of tokens per minute for the API"
+    )
+    provider: Literal["openai", "anthropic", "vllm", "litellm", "openrouter"] = Field(
+        default="openai",
+        description="The provider of the API"
+    )
+
 
 class RawOutput(Entity):
     """Raw output from LLM API calls with metadata."""

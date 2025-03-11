@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from typing import Literal, List, Dict, Type, cast
 
 # SQLModel / database imports
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 # Imports from your project
@@ -23,7 +23,9 @@ from minference.threads.sql_models import (
     ENTITY_MODEL_MAP, Base  # Import Base from sql_models
 )
 from minference.ecs.caregistry import CallableRegistry
-from minference.ecs.entity import EntityRegistry, SqlEntityStorage, Entity, EntityBase
+from minference.ecs.entity import Entity
+from minference.ecs.storage import SqlEntityStorage, EntityBase, BaseEntitySQL
+from minference.ecs.enregistry import EntityRegistry
 from minference.clients.utils import parse_json_string, msg_dict_to_oai, msg_dict_to_anthropic
 
 
@@ -40,14 +42,79 @@ engine = create_engine(f"sqlite:///{db_file}", echo=False)
 # 2) Drop all tables first to ensure clean slate
 Base.metadata.drop_all(engine)
 
+# CRITICAL: Directly create the base_entity table since it's not being registered properly
+# Use direct SQL approach to create the table if it doesn't exist
+from sqlalchemy import text
+
+# First, check if the base_entity table already exists
+inspector = inspect(engine)
+if not 'base_entity' in inspector.get_table_names():
+    # Create the base_entity table directly with SQL
+    with engine.connect() as conn:
+        conn.execute(text("""
+        CREATE TABLE base_entity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ecs_id CHAR(32) NOT NULL,
+            lineage_id CHAR(32) NOT NULL,
+            parent_id CHAR(32),
+            created_at DATETIME NOT NULL,
+            old_ids TEXT NOT NULL,
+            class_name VARCHAR(255) NOT NULL,
+            data TEXT,
+            entity_type VARCHAR(50) NOT NULL DEFAULT 'base_entity'
+        )
+        """))
+        conn.commit()
+    print("Created base_entity table directly with SQL")
+
+# Import RequestLimitsSQL to ensure it's included in metadata too
+from minference.threads.sql_models import RequestLimitsSQL
+
 # Print table metadata before creating
 for table in Base.metadata.sorted_tables:
     print(f"\nTable: {table.name}")
     for column in table.columns:
         print(f"  {column.name}: {column.type}")
 
-# 3) Create all tables if needed
+# Create the tables
 Base.metadata.create_all(engine)
+
+# Verify the required tables exist
+with engine.connect() as conn:
+    # Check base_entity table
+    result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='base_entity'"))
+    base_entity_exists = result.fetchone() is not None
+    print(f"base_entity table exists: {base_entity_exists}")
+    
+    # Check request_limits table
+    result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='request_limits'"))
+    request_limits_exists = result.fetchone() is not None
+    print(f"request_limits table exists: {request_limits_exists}")
+    
+    if not base_entity_exists:
+        print("WARNING: base_entity table still not created - creating it directly")
+        # Create the base_entity table directly with SQL as a last resort
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS base_entity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ecs_id CHAR(32) NOT NULL,
+            lineage_id CHAR(32) NOT NULL,
+            parent_id CHAR(32),
+            created_at DATETIME NOT NULL,
+            old_ids TEXT NOT NULL,
+            class_name VARCHAR(255) NOT NULL,
+            data TEXT,
+            entity_type VARCHAR(50) NOT NULL DEFAULT 'base_entity'
+        )
+        """))
+        conn.commit()
+        
+    if not request_limits_exists:
+        print("WARNING: request_limits table not created! Make sure RequestLimits entity is registered.")
+        
+    # Verify again after our fix attempt
+    all_tables = [row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()]
+    print(f"All tables in database: {all_tables}")
 
 # 4) Build a session factory
 def session_factory():
@@ -57,7 +124,24 @@ def session_factory():
 # Cast the mapping to the correct type to satisfy the type checker
 entity_to_orm_map = cast(Dict[Type[Entity], Type[EntityBase]], ENTITY_MODEL_MAP)
 
-# 6) Create the SQL storage object & tell the registry to use it
+# CRITICAL: Make sure Entity base class is mapped to BaseEntitySQL for fallback
+# Without this, entities without specific SQL models won't be able to be stored
+entity_to_orm_map[Entity] = cast(Type[EntityBase], BaseEntitySQL)
+
+# CONFIRM RequestLimits is in the mapping (CRITICAL for our fix)
+from minference.threads.models import RequestLimits
+if RequestLimits not in entity_to_orm_map:
+    print("WARNING: RequestLimits not found in ENTITY_MODEL_MAP! Adding it now.")
+    entity_to_orm_map[RequestLimits] = RequestLimitsSQL
+else:
+    print(f"✅ Good: RequestLimits found in ENTITY_MODEL_MAP (mapped to {entity_to_orm_map[RequestLimits].__name__})")
+
+# Print the whole mapping for debugging
+print("Entity to ORM mapping:")
+for entity_class, orm_class in entity_to_orm_map.items():
+    print(f" - {entity_class.__name__} -> {orm_class.__name__}")
+
+# 7) Create the SQL storage object & tell the registry to use it
 sql_storage = SqlEntityStorage(session_factory=session_factory, entity_to_orm_map=entity_to_orm_map)
 EntityRegistry.use_storage(sql_storage)
 

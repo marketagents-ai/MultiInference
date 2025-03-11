@@ -14,7 +14,8 @@ from typing import Dict, Any, cast, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from minference.ecs.entity import Entity, EntityRegistry
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
 from minference.threads.models import CallableTool, StructuredTool, MessageRole
 from minference.threads.sql_models import Base, CallableToolSQL, StructuredToolSQL

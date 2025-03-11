@@ -14,7 +14,8 @@ import pytest
 from sqlalchemy import create_engine, select, Integer, String, JSON, DateTime
 from sqlalchemy.orm import Session, sessionmaker, joinedload, declarative_base, mapped_column
 
-from minference.ecs.entity import Entity, EntityRegistry
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import (
     RawOutput, 
     ProcessedOutput, 

@@ -22,7 +22,8 @@ from minference.threads.models import (
 )
 
 # Import SqlEntityStorage and SQL models
-from minference.ecs.entity import EntityRegistry, entity_tracer, SqlEntityStorage
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
+from minference.ecs.storage import SqlEntityStorage
 from minference.threads.sql_models import (
     ENTITY_MODEL_MAP, ChatThreadSQL, ChatMessageSQL
 )

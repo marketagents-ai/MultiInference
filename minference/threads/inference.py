@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 # Internal imports - complete set
 from minference.threads.models import (
     RawOutput, ProcessedOutput, ChatThread, LLMClient,
-    ResponseFormat, Entity, ChatMessage,
+    ResponseFormat, Entity, ChatMessage, RequestLimits,
     MessageRole
 )
 from minference.oai_parallel import (
@@ -31,25 +31,6 @@ from minference.clients.requests import (
     create_openrouter_completion_config
 )
 from minference.ecs.enregistry import EntityRegistry
-
-
-class RequestLimits(Entity):
-    """
-    Configuration for API request limits.
-    Inherits from Entity for UUID handling and registry integration.
-    """
-    max_requests_per_minute: int = Field(
-        default=50,
-        description="The maximum number of requests per minute for the API"
-    )
-    max_tokens_per_minute: int = Field(
-        default=100000,
-        description="The maximum number of tokens per minute for the API"
-    )
-    provider: Literal["openai", "anthropic", "vllm", "litellm", "openrouter"] = Field(
-        default="openai",
-        description="The provider of the API"
-    )
 
 def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
     """Create a hashmap of chat threads by their IDs."""

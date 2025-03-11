@@ -14,7 +14,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from minference.ecs.entity import Entity, EntityRegistry
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import (
     ChatMessage, ChatThread, GeneratedJsonObject, LLMConfig, 
     RawOutput, ProcessedOutput, StructuredTool, SystemPrompt, 
