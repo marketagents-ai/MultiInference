@@ -75,5 +75,5 @@ def test_tables_created(engine):
     
 def test_entity_model_map():
     """Test that the entity to ORM model mapping is complete."""
-    # Check we have mappings for all 10 entity types
-    assert len(ENTITY_MODEL_MAP) == 10
+    # Check we have mappings for all 11 entity types
+    assert len(ENTITY_MODEL_MAP) == 11

@@ -30,6 +30,7 @@ from minference.threads.models import (
     RawOutput, ProcessedOutput, LLMClient, ResponseFormat, MessageRole
 )
 from minference.ecs.entity import Entity
+from minference.threads.inference import RequestLimits
 
 # Create SQLAlchemy Base
 Base = declarative_base()
@@ -75,6 +76,25 @@ class BaseEntitySQL(EntityBase):
     __mapper_args__ = {
         "polymorphic_identity": "base_entity",
     }
+    
+    @classmethod
+    def from_entity(cls, entity: 'Entity') -> 'BaseEntitySQL':
+        """Convert from Entity to SQL model."""
+        return cls(
+            ecs_id=entity.ecs_id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
+            created_at=entity.created_at,
+            old_ids=[str(uid) for uid in entity.old_ids] if entity.old_ids else [],
+            data=entity.model_dump(),
+            entity_class=entity.__class__.__name__,
+            entity_type="base_entity"
+        )
+    
+    def to_entity(self) -> 'Entity':
+        """Convert from SQL model to Entity."""
+        from minference.threads.models import Entity  # Avoid circular import
+        return Entity(**self.data)
 
 class ChatThreadSQL(EntityBase):
     """SQLAlchemy model for ChatThread entities."""
@@ -960,6 +980,48 @@ class ProcessedOutputSQL(EntityBase):
                 if usage:
                     self.usage = usage
 
+class RequestLimitsSQL(EntityBase):
+    """SQLAlchemy model for RequestLimits entities."""
+    __tablename__ = "request_limits"
+    
+    # RequestLimits specific fields
+    max_requests_per_minute = mapped_column(Integer, nullable=False, default=50)
+    max_tokens_per_minute = mapped_column(Integer, nullable=False, default=100000)
+    provider = mapped_column(String(20), nullable=False, default="openai")
+    
+    __mapper_args__ = {
+        "polymorphic_identity": "request_limits",
+    }
+    
+    @classmethod
+    def from_entity(cls, entity: RequestLimits) -> 'RequestLimitsSQL':
+        """Convert from Entity to SQL model."""
+        return cls(
+            ecs_id=entity.ecs_id,
+            lineage_id=entity.lineage_id,
+            parent_id=entity.parent_id,
+            created_at=entity.created_at,
+            old_ids=[str(uid) for uid in entity.old_ids] if entity.old_ids else [],
+            max_requests_per_minute=entity.max_requests_per_minute,
+            max_tokens_per_minute=entity.max_tokens_per_minute,
+            provider=entity.provider,
+            entity_type="request_limits"
+        )
+    
+    def to_entity(self) -> RequestLimits:
+        """Convert from SQL model to Entity."""
+        return RequestLimits(
+            ecs_id=self.ecs_id,
+            lineage_id=self.lineage_id,
+            parent_id=self.parent_id,
+            created_at=self.created_at,
+            old_ids=[UUID(uid) for uid in self.old_ids] if self.old_ids else [],
+            max_requests_per_minute=self.max_requests_per_minute,
+            max_tokens_per_minute=self.max_tokens_per_minute,
+            provider=self.provider,
+            from_storage=True
+        )
+
 # Class to ORM model mapping
 ENTITY_MODEL_MAP = {
     ChatThread: ChatThreadSQL,
@@ -971,5 +1033,6 @@ ENTITY_MODEL_MAP = {
     Usage: UsageSQL,
     GeneratedJsonObject: GeneratedJsonObjectSQL,
     RawOutput: RawOutputSQL,
-    ProcessedOutput: ProcessedOutputSQL
+    ProcessedOutput: ProcessedOutputSQL,
+    RequestLimits: RequestLimitsSQL
 }
