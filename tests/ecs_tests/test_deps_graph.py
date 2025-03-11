@@ -8,7 +8,9 @@ import logging
 from uuid import UUID, uuid4
 from typing import Optional, List, Dict, Set, Any, TypeVar, cast
 
-from minference.ecs.entity import Entity, EntityRegistry, InMemoryEntityStorage, entity_tracer
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
+from minference.ecs.storage import InMemoryEntityStorage
 from minference.ecs.dependency.graph import EntityDependencyGraph, CycleStatus, GraphNode
 
 from pydantic import Field

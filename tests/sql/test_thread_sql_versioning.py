@@ -21,7 +21,8 @@ import pytest
 from sqlalchemy import create_engine, select, Integer, String, JSON, DateTime
 from sqlalchemy.orm import Session, sessionmaker, joinedload, declarative_base, mapped_column
 
-from minference.ecs.entity import Entity, EntityRegistry
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import (
     ChatThread, ChatMessage, LLMConfig, LLMClient, MessageRole, SystemPrompt,
     CallableTool, StructuredTool, GeneratedJsonObject, Usage, ResponseFormat
@@ -51,8 +52,8 @@ def engine():
         connect_args={"check_same_thread": False},
     )
     
-    # Import the Base from entity.py and sql_models.py to create all tables
-    from minference.ecs.entity import BaseEntitySQL, Base as EntityBase_Base
+    # Import the Base from storage.py and sql_models.py to create all tables
+    from minference.ecs.storage import BaseEntitySQL, Base as EntityBase_Base
     from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
@@ -79,7 +80,7 @@ def session_factory(session):
 @pytest.fixture
 def setup_sql_storage(session_factory):
     """Configure EntityRegistry to use SQL storage."""
-    from minference.ecs.entity import SqlEntityStorage
+    from minference.ecs.storage import SqlEntityStorage
     from minference.threads.sql_models import ENTITY_MODEL_MAP
     
     # Create SQL storage with the session factory and entity mappings
@@ -544,7 +545,7 @@ def test_simple_entity_modification(setup_sql_storage):
 # Tests for complex versioning scenarios
 def test_entity_tracer_decorator(setup_sql_storage):
     """Test that the entity_tracer decorator properly tracks and forks entities."""
-    from minference.ecs.entity import entity_tracer
+    from minference.ecs.enregistry import entity_tracer
     
     # Create a simple entity
     system_prompt = SystemPrompt(

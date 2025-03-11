@@ -5,7 +5,8 @@ import pytest
 from typing import cast, Optional, List, Dict, Set, Any, Iterator, TypeVar
 from uuid import UUID, uuid4
 
-from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
 from minference.ecs.dependency.graph import EntityDependencyGraph
 
 from conftest import (

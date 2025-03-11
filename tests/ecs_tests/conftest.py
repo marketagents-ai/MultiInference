@@ -9,7 +9,9 @@ from typing import List, Dict, Optional, Set, Any, Tuple, cast, TypeVar
 from pydantic import Field
 
 # Import directly from the main module - we're testing the actual implementation
-from minference.ecs.entity import Entity, EntityRegistry, InMemoryEntityStorage, entity_tracer
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
+from minference.ecs.storage import InMemoryEntityStorage
 from minference.ecs.dependency.graph import EntityDependencyGraph, CycleStatus
 
 # Type variables for better type hinting

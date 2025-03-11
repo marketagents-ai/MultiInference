@@ -735,6 +735,12 @@ class ChatMessage(Entity):
         default=None,
         description="Usage statistics for the message"
     )
+    
+    # Set sql_root=False by default for messages, as they should be registered by their parent thread
+    sql_root: bool = Field(
+        default=False, 
+        description="Whether the entity is the root of an SQL entity tree - set to False for messages"
+    )
 
 
     @computed_field

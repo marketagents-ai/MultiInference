@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from minference.threads.models import LLMConfig, LLMClient, ResponseFormat
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 
 
 def test_llm_config_creation():

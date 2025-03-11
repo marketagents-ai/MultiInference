@@ -6,7 +6,7 @@ import json
 from typing import cast, Optional, Dict, Any
 from uuid import UUID
 
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
 from minference.threads.models import CallableTool
 

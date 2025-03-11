@@ -6,7 +6,7 @@ import json
 from typing import List, Dict, Optional, Any, cast
 from uuid import UUID
 
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import (
     ChatThread, ChatMessage, MessageRole, SystemPrompt, LLMConfig, 
     CallableTool, StructuredTool, ResponseFormat, ProcessedOutput

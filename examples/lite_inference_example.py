@@ -6,7 +6,7 @@ from typing import Literal, List
 from minference.ecs.caregistry import CallableRegistry
 import time
 from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 import os
 import logging
 #set logging level to debug

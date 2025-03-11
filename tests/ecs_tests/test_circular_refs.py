@@ -6,7 +6,8 @@ import logging
 from typing import List, Dict, Set, Any, cast
 from uuid import UUID
 
-from minference.ecs.entity import Entity, EntityRegistry
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
 from conftest import ManyToManyLeft, ManyToManyRight
 
 # Configure logging

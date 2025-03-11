@@ -77,6 +77,27 @@ class EntityRegistry(BaseRegistry):
         return cls._storage.get_lineage_ids(lineage_id)
         
     @classmethod
+    def merge_entity(cls, entity: Entity) -> Optional[Entity]:
+        """
+        Special method for SQL storage to merge an entity that might be attached to another session.
+        If using in-memory storage, this just calls register.
+        
+        Args:
+            entity: Entity to merge
+            
+        Returns:
+            The merged entity if successful, None otherwise
+        """
+        # Check if we're using SQL storage
+        storage_info = cls.get_registry_status()
+        if storage_info.get('storage') == 'sql' and hasattr(cls._storage, 'merge_entity'):
+            # Use hasattr to check for merge_entity method at runtime
+            merge_method = getattr(cls._storage, 'merge_entity')
+            return merge_method(entity)
+        # Otherwise, use normal registration
+        return cls.register(entity)
+        
+    @classmethod
     def get_lineage_entities(cls, lineage_id: UUID) -> List[Entity]:
         """Get all entities with a specific lineage ID."""
         return cls._storage.get_lineage_entities(lineage_id)

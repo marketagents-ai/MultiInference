@@ -6,7 +6,7 @@ import json
 from typing import cast, Optional
 from uuid import UUID
 
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import ChatMessage, MessageRole
 
 class TestChatMessage:

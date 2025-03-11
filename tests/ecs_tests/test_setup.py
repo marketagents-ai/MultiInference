@@ -5,7 +5,9 @@ import sys
 import logging
 from uuid import uuid4
 
-from minference.ecs.entity import Entity, EntityRegistry, InMemoryEntityStorage
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
+from minference.ecs.storage import InMemoryEntityStorage
 
 # Configure logging for tests
 def setup_ecs_tests():

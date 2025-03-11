@@ -21,7 +21,8 @@ import pytest
 from sqlalchemy import create_engine, select, Integer, String, JSON, DateTime
 from sqlalchemy.orm import Session, sessionmaker, joinedload
 
-from minference.ecs.entity import Entity, EntityRegistry, entity_tracer, Base as EntityBase_Base
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
 from minference.threads.models import (
     ChatThread, ChatMessage, LLMConfig, LLMClient, MessageRole, SystemPrompt,
     CallableTool, StructuredTool, GeneratedJsonObject, Usage, ResponseFormat,
@@ -52,13 +53,15 @@ def engine():
         connect_args={"check_same_thread": False},
     )
     
-    # Import the Base from entity.py and sql_models.py to create all tables
-    from minference.ecs.entity import BaseEntitySQL, Base as EntityBase_Base
+    # Import the Base from storage.py and sql_models.py to create all tables
+    from minference.ecs.storage import BaseEntitySQL
     from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
     ThreadBase.metadata.create_all(engine)
-    EntityBase_Base.metadata.create_all(engine)
+    # Import the Base from the storage module
+    from minference.ecs.storage import Base
+    Base.metadata.create_all(engine)
     
     return engine
 
@@ -73,7 +76,7 @@ def session(engine):
 @pytest.fixture
 def setup_sql_storage(engine):
     """Set up SQL storage with EntityRegistry."""
-    from minference.ecs.entity import SqlEntityStorage
+    from minference.ecs.storage import SqlEntityStorage
     from minference.threads.sql_models import ENTITY_MODEL_MAP
     
     # Create SqlEntityStorage with entity mappings

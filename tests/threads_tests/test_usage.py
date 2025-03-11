@@ -5,7 +5,7 @@ import pytest
 from uuid import UUID
 
 from minference.threads.models import Usage
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 
 
 def test_usage_creation():

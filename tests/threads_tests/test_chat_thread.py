@@ -7,7 +7,7 @@ from typing import cast, Optional, Dict, Any, List
 from uuid import UUID
 import asyncio
 
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import (
     ChatThread, ChatMessage, LLMConfig, LLMClient, ResponseFormat, 
     CallableTool, StructuredTool, MessageRole, SystemPrompt,

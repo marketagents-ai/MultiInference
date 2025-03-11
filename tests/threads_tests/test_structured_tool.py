@@ -7,7 +7,7 @@ from typing import cast, Optional, Dict, Any, List
 from uuid import UUID
 from pydantic import BaseModel, Field
 
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.threads.models import StructuredTool
 
 # Define test models for structured output

@@ -13,7 +13,7 @@ from minference.threads.models import (
     GeneratedJsonObject,
     Usage
 )
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 
 
 def test_raw_output_creation():

@@ -100,149 +100,106 @@ class ChatThreadSQL(EntityBase):
     }
     
     def to_entity(self) -> ChatThread:
-        """Convert from SQL model to Entity."""
-        # Convert related entities if available
-        system_prompt = self.system_prompt.to_entity() if self.system_prompt else None
-        llm_config = self.llm_config.to_entity() if self.llm_config else None
-        tools = [tool.to_entity() for tool in self.tools] if self.tools else []
-        forced_output = self.forced_output.to_entity() if self.forced_output else None
-        
-        # Ensure messages relationship is eagerly loaded for ChatThread
-        from sqlalchemy.orm import Session
-        from sqlalchemy.orm import joinedload
+        """Convert from SQL model to Entity using SQLAlchemy best practices."""
         from __main__ import EntityRegistry
-        
-        # If no messages loaded but we have chat_thread_id, try to load them explicitly
-        if not hasattr(self, 'messages') or not self.messages:
-            print(f"No messages found for thread {self.ecs_id} in self.messages, trying to load")
-            # Try to load explicitly
-            if EntityRegistry._storage and hasattr(EntityRegistry._storage, '_session_factory'):
-                session = EntityRegistry._storage._session_factory()
-                try:
-                    # Specifically query for messages related to this thread
-                    # Get messages for this thread ID
-                    messages_orm = session.query(ChatMessageSQL).filter(
-                        ChatMessageSQL.chat_thread_id == self.ecs_id
-                    ).all()
-                    
-                    # Also try to find messages for any previous versions of this thread
-                    # This handles the case where messages were added to a previous thread version
-                    # and then the thread was forked (got a new ecs_id)
-                    if hasattr(self, 'old_ids') and self.old_ids:
-                        print(f"Also checking for messages with thread IDs in old_ids: {self.old_ids}")
-                        from uuid import UUID as UUIDType
-                        
-                        for old_id in self.old_ids:
-                            if isinstance(old_id, str):
-                                old_thread_id = old_id
-                            else:
-                                old_thread_id = str(old_id)
-                            
-                            # Try finding messages linked to an old version of this thread
-                            old_messages = session.query(ChatMessageSQL).filter(
-                                ChatMessageSQL.chat_thread_id == UUIDType(old_thread_id)
-                            ).all()
-                            
-                            if old_messages:
-                                print(f"Found {len(old_messages)} messages for old thread ID {old_thread_id}")
-                                messages_orm.extend(old_messages)
-                    if messages_orm:
-                        print(f"Found {len(messages_orm)} messages directly related to thread {self.ecs_id}")
-                        self.messages = messages_orm
-                finally:
-                    session.close()
-        
-        # Make sure we have a valid LLMConfig (required)
-        if llm_config is None:
-            # Create a minimal default LLMConfig
-            from minference.threads.models import LLMConfig, LLMClient, ResponseFormat
-            llm_config = LLMConfig(client=LLMClient.openai, model="gpt-4")
-        
-        # Convert messages if available
-        history = []
-        print(f"Converting ChatThreadSQL {self.ecs_id} to Entity, messages count: {len(self.messages) if self.messages else 0}")
-        if hasattr(self, 'messages') and self.messages:
-            print(f"Message IDs: {[msg.ecs_id for msg in self.messages]}")
-            history = [msg.to_entity() for msg in self.messages]
-        else:
-            print(f"No messages found for thread {self.ecs_id}, attempting to load from database")
-            from sqlalchemy.orm import Session
-            from sqlalchemy import create_engine
-            from __main__ import EntityRegistry
-            
-            # Get a session to load messages
-            storage_info = EntityRegistry.get_registry_status()
-            if storage_info.get('storage') == 'sql':
-                session = EntityRegistry._storage._session_factory()
-                try:
-                    # Query messages directly from the database with this thread's ID
-                    from sqlalchemy.orm import joinedload
-                    print(f"Querying messages for chat_thread_id={self.ecs_id}")
-                    messages = []
-                    
-                    # Try all potential ways the relationship might be stored
-                    by_chat_thread_id = session.query(ChatMessageSQL).filter(
-                        ChatMessageSQL.chat_thread_id == self.ecs_id
-                    ).all()
-                    if by_chat_thread_id:
-                        print(f"Found {len(by_chat_thread_id)} messages by chat_thread_id")
-                        messages.extend(by_chat_thread_id)
-                        
-                    # Also get any messages in the messages relationship
-                    thread_sql = session.query(ChatThreadSQL).options(
-                        # Type ignore directive is needed here because SQLAlchemy supports string
-                        # attribute names but the type checker doesn't recognize this pattern
-                        joinedload("messages")  # type: ignore
-                    ).filter(ChatThreadSQL.ecs_id == self.ecs_id).first()
-                    
-                    if thread_sql and thread_sql.messages:
-                        print(f"Found {len(thread_sql.messages)} messages in thread_sql.messages relationship")
-                        messages.extend([m for m in thread_sql.messages if m.ecs_id not in [msg.ecs_id for msg in messages]])
-                        
-                    # Deduplicate messages
-                    unique_messages = {}
-                    for msg in messages:
-                        unique_messages[msg.ecs_id] = msg
-                    messages = list(unique_messages.values())
-                    
-                    if messages:
-                        print(f"Found {len(messages)} messages for thread {self.ecs_id} in database")
-                        history = [msg.to_entity() for msg in messages]
-                    else:
-                        print(f"No messages found in database for thread {self.ecs_id}")
-                finally:
-                    session.close()
-        
-        # Convert old_ids strings back to UUID objects
+        from sqlalchemy.orm import joinedload
+        from sqlalchemy import select
         from uuid import UUID as UUIDType
-        uuid_old_ids = []
-        if self.old_ids:
-            for old_id in self.old_ids:
-                if isinstance(old_id, str):
-                    uuid_old_ids.append(UUIDType(old_id))
-                elif isinstance(old_id, UUIDType):
-                    uuid_old_ids.append(old_id)
+        from minference.threads.models import ChatMessage, LLMConfig, LLMClient, ResponseFormat
+        from typing import Any, cast
+
+        # Create a fresh session to avoid conflicts
+        with EntityRegistry._storage._session_factory() as session:
+            # Query the thread with eager loading of all relationships in one shot
+            # Using direct class attributes as required by SQLAlchemy
+            thread_sql = session.query(ChatThreadSQL).options(
+                joinedload(ChatThreadSQL.messages),  # type: ignore
+                joinedload(ChatThreadSQL.system_prompt),  # type: ignore
+                joinedload(ChatThreadSQL.llm_config),  # type: ignore
+                joinedload(ChatThreadSQL.tools),  # type: ignore
+                joinedload(ChatThreadSQL.forced_output)  # type: ignore
+            ).filter(
+                ChatThreadSQL.ecs_id == self.ecs_id
+            ).first()
             
-        return ChatThread(
-            ecs_id=self.ecs_id,
-            lineage_id=self.lineage_id,
-            parent_id=self.parent_id,
-            created_at=self.created_at,
-            old_ids=uuid_old_ids,  # Use converted UUID objects
-            name=self.title,
-            system_prompt=system_prompt,
-            llm_config=llm_config,
-            tools=tools,
-            history=history,  # Add the converted messages
-            workflow_step=self.workflow_step,
-            new_message=self.new_message,
-            prefill=self.prefill,
-            postfill=self.postfill,
-            use_schema_instruction=self.use_schema_instruction,
-            use_history=self.use_history,
-            forced_output=forced_output,
-            from_storage=True
-        )
+            if not thread_sql:
+                # Fallback to self if thread can't be loaded with fresh session
+                thread_sql = self
+            
+            # Convert related entities from the loaded data
+            system_prompt = thread_sql.system_prompt.to_entity() if thread_sql.system_prompt else None
+            llm_config = thread_sql.llm_config.to_entity() if thread_sql.llm_config else None
+            tools = [tool.to_entity() for tool in thread_sql.tools] if thread_sql.tools else []
+            forced_output = thread_sql.forced_output.to_entity() if thread_sql.forced_output else None
+            
+            # Also check if thread has messages in its old IDs
+            additional_message_ids = []
+            if thread_sql.old_ids:
+                # Look for messages with thread IDs from old_ids
+                for old_id in thread_sql.old_ids:
+                    if isinstance(old_id, str):
+                        old_thread_id = UUIDType(old_id)
+                    else:
+                        old_thread_id = old_id
+                        
+                    # Use ORM query with type ignore to bypass type checking limitations
+                    old_ids_query = select(ChatMessageSQL.ecs_id).where(
+                        ChatMessageSQL.chat_thread_id == old_thread_id  # type: ignore
+                    )
+                    old_message_ids = [row[0] for row in session.execute(old_ids_query).all()]
+                    additional_message_ids.extend(old_message_ids)
+            
+            # Convert messages from the eagerly loaded data
+            history = []
+            if hasattr(thread_sql, 'messages') and thread_sql.messages:
+                history = [msg.to_entity() for msg in thread_sql.messages]
+                
+            # Add any additional messages from old IDs
+            if additional_message_ids:
+                # Get these messages using EntityRegistry to avoid session issues
+                additional_messages = EntityRegistry.get_many(additional_message_ids, ChatMessage)
+                if additional_messages:
+                    # Add messages that aren't already in history
+                    existing_ids = {msg.ecs_id for msg in history}
+                    for msg in additional_messages:
+                        if msg.ecs_id not in existing_ids:
+                            history.append(msg)
+                            existing_ids.add(msg.ecs_id)
+            
+            # Make sure we have a valid LLMConfig (required)
+            if llm_config is None:
+                llm_config = LLMConfig(client=LLMClient.openai, model="gpt-4")
+            
+            # Convert old_ids strings back to UUID objects
+            uuid_old_ids = []
+            if thread_sql.old_ids:
+                for old_id in thread_sql.old_ids:
+                    if isinstance(old_id, str):
+                        uuid_old_ids.append(UUIDType(old_id))
+                    elif isinstance(old_id, UUIDType):
+                        uuid_old_ids.append(old_id)
+            
+            # Create and return the entity
+            return ChatThread(
+                ecs_id=thread_sql.ecs_id,
+                lineage_id=thread_sql.lineage_id,
+                parent_id=thread_sql.parent_id,
+                created_at=thread_sql.created_at,
+                old_ids=uuid_old_ids,
+                name=thread_sql.title,
+                system_prompt=system_prompt,
+                llm_config=llm_config,
+                tools=tools,
+                history=history,
+                workflow_step=thread_sql.workflow_step,
+                new_message=thread_sql.new_message,
+                prefill=thread_sql.prefill,
+                postfill=thread_sql.postfill,
+                use_schema_instruction=thread_sql.use_schema_instruction,
+                use_history=thread_sql.use_history,
+                forced_output=forced_output,
+                from_storage=True
+            )
     
     @classmethod
     def from_entity(cls, entity: ChatThread) -> 'ChatThreadSQL':
@@ -274,67 +231,89 @@ class ChatThreadSQL(EntityBase):
             if entity.system_prompt.ecs_id in orm_objects:
                 self.system_prompt = orm_objects[entity.system_prompt.ecs_id]
             else:
-                # Try to find in database or create new
-                system_prompt = session.query(SystemPromptSQL).filter(
-                    SystemPromptSQL.ecs_id == entity.system_prompt.ecs_id
-                ).first()
-                if system_prompt:
-                    self.system_prompt = system_prompt
+                # Try to find in database only if we don't already have the relationship
+                if not self.system_prompt_id or self.system_prompt_id != entity.system_prompt.ecs_id:
+                    system_prompt = session.query(SystemPromptSQL).filter(
+                        SystemPromptSQL.ecs_id == entity.system_prompt.ecs_id
+                    ).first()
+                    if system_prompt:
+                        self.system_prompt = system_prompt
                     
         # Handle llm_config relationship
         if entity.llm_config:
             if entity.llm_config.ecs_id in orm_objects:
                 self.llm_config = orm_objects[entity.llm_config.ecs_id]
             else:
-                # Try to find in database or create new
-                llm_config = session.query(LLMConfigSQL).filter(
-                    LLMConfigSQL.ecs_id == entity.llm_config.ecs_id
-                ).first()
-                if llm_config:
-                    self.llm_config = llm_config
+                # Try to find in database only if we don't already have the relationship
+                if not self.llm_config_id or self.llm_config_id != entity.llm_config.ecs_id:
+                    llm_config = session.query(LLMConfigSQL).filter(
+                        LLMConfigSQL.ecs_id == entity.llm_config.ecs_id
+                    ).first()
+                    if llm_config:
+                        self.llm_config = llm_config
                     
         # Handle forced_output relationship
         if entity.forced_output:
             if entity.forced_output.ecs_id in orm_objects:
                 self.forced_output = orm_objects[entity.forced_output.ecs_id]
             else:
-                # Try to find in database
-                forced_output = session.query(ToolSQL).filter(
-                    ToolSQL.ecs_id == entity.forced_output.ecs_id
-                ).first()
-                if forced_output:
-                    self.forced_output = forced_output
+                # Try to find in database only if we don't already have the relationship
+                if not self.forced_output_id or self.forced_output_id != entity.forced_output.ecs_id:
+                    forced_output = session.query(ToolSQL).filter(
+                        ToolSQL.ecs_id == entity.forced_output.ecs_id
+                    ).first()
+                    if forced_output:
+                        self.forced_output = forced_output
                     
         # Handle tools relationship (many-to-many)
         if entity.tools:
-            tools = []
-            for tool in entity.tools:
-                if tool.ecs_id in orm_objects:
-                    tools.append(orm_objects[tool.ecs_id])
-                else:
-                    # Try to find in database
-                    tool_orm = session.query(ToolSQL).filter(
-                        ToolSQL.ecs_id == tool.ecs_id
-                    ).first()
-                    if tool_orm:
-                        tools.append(tool_orm)
-            self.tools = tools
+            # Get current tool IDs in relationship
+            current_tool_ids = {tool.ecs_id for tool in self.tools} if self.tools else set()
+            
+            # Only update if there's a difference
+            new_tool_ids = {tool.ecs_id for tool in entity.tools}
+            if current_tool_ids != new_tool_ids:
+                tools = []
+                for tool in entity.tools:
+                    if tool.ecs_id in orm_objects:
+                        tools.append(orm_objects[tool.ecs_id])
+                    else:
+                        # Try to find in database
+                        tool_orm = session.query(ToolSQL).filter(
+                            ToolSQL.ecs_id == tool.ecs_id
+                        ).first()
+                        if tool_orm:
+                            tools.append(tool_orm)
+                if tools:
+                    self.tools = tools
+                    print(f"Updated tools list for ChatThreadSQL {self.ecs_id} with {len(tools)} tools")
             
         # Handle history relationship (messages)
         if entity.history:
-            messages = []
-            for message in entity.history:
-                if message.ecs_id in orm_objects:
-                    messages.append(orm_objects[message.ecs_id])
-                else:
-                    # Try to find in database
-                    message_orm = session.query(ChatMessageSQL).filter(
-                        ChatMessageSQL.ecs_id == message.ecs_id
-                    ).first()
-                    if message_orm:
-                        messages.append(message_orm)
-            self.messages = messages
-            print(f"Added {len(messages)} messages to ChatThreadSQL {self.ecs_id}")
+            # Get current message IDs in relationship
+            current_message_ids = {msg.ecs_id for msg in self.messages} if self.messages else set()
+            
+            # Only update if there's a difference
+            new_message_ids = {msg.ecs_id for msg in entity.history}
+            if current_message_ids != new_message_ids:
+                messages = []
+                for message in entity.history:
+                    if message.ecs_id in orm_objects:
+                        messages.append(orm_objects[message.ecs_id])
+                    else:
+                        # Try to find in database
+                        message_orm = session.query(ChatMessageSQL).filter(
+                            ChatMessageSQL.ecs_id == message.ecs_id
+                        ).first()
+                        if message_orm:
+                            messages.append(message_orm)
+                if messages:
+                    self.messages = messages
+                    print(f"Added {len(messages)} messages to ChatThreadSQL {self.ecs_id}")
+                    # Log the message IDs for debugging
+                    print(f"Message IDs: {', '.join(str(msg.ecs_id) for msg in messages)}")
+            else:
+                print(f"Skipping history update - no changes detected in {len(entity.history)} messages")
 
 class ChatMessageSQL(EntityBase):
     """SQLAlchemy model for ChatMessage entities."""
@@ -434,61 +413,67 @@ class ChatMessageSQL(EntityBase):
         """Handle relationships for ChatMessage."""
         # Handle chat_thread relationship
         if entity.chat_thread_id:
-            if entity.chat_thread_id in orm_objects:
-                self.chat_thread = orm_objects[entity.chat_thread_id]
-                # Make sure chat_thread_id is set correctly
-                print(f"Setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
-                self.chat_thread_id = entity.chat_thread_id
-            else:
-                # Try to find in database
-                chat_thread = session.query(ChatThreadSQL).filter(
-                    ChatThreadSQL.ecs_id == entity.chat_thread_id
-                ).first()
-                if chat_thread:
-                    self.chat_thread = chat_thread
-                    # Make sure chat_thread_id is set correctly
-                    print(f"Setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+            # Only update the relationship if it doesn't already match
+            # This prevents unnecessary updates and possible duplications
+            if self.chat_thread_id != entity.chat_thread_id:
+                if entity.chat_thread_id in orm_objects:
+                    self.chat_thread = orm_objects[entity.chat_thread_id]
                     self.chat_thread_id = entity.chat_thread_id
+                    print(f"Updated chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
                 else:
-                    # Even if we can't find the thread, make sure the ID is set
-                    print(f"Thread not found, but setting chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
-                    self.chat_thread_id = entity.chat_thread_id
+                    # Try to find in database
+                    chat_thread = session.query(ChatThreadSQL).filter(
+                        ChatThreadSQL.ecs_id == entity.chat_thread_id
+                    ).first()
+                    if chat_thread:
+                        self.chat_thread = chat_thread
+                        self.chat_thread_id = entity.chat_thread_id
+                        print(f"Updated chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+                    else:
+                        # Only set the ID, don't create a relationship
+                        self.chat_thread_id = entity.chat_thread_id
+                        print(f"Set chat_thread_id={entity.chat_thread_id} for message {entity.ecs_id}")
+            else:
+                print(f"Skipping chat_thread_id update - already set to {entity.chat_thread_id}")
         
         # Handle parent_message relationship
         if entity.parent_message_uuid:
             if entity.parent_message_uuid in orm_objects:
                 self.parent_message = orm_objects[entity.parent_message_uuid]
             else:
-                # Try to find in database
-                parent_message = session.query(ChatMessageSQL).filter(
-                    ChatMessageSQL.ecs_id == entity.parent_message_uuid
-                ).first()
-                if parent_message:
-                    self.parent_message = parent_message
+                # Try to find in database only if we don't already have the relationship
+                if not self.parent_message_id or self.parent_message_id != entity.parent_message_uuid:
+                    parent_message = session.query(ChatMessageSQL).filter(
+                        ChatMessageSQL.ecs_id == entity.parent_message_uuid
+                    ).first()
+                    if parent_message:
+                        self.parent_message = parent_message
         
         # Handle tool relationship by UUID
         if entity.tool_uuid:
             if entity.tool_uuid in orm_objects:
                 self.tool = orm_objects[entity.tool_uuid]
             else:
-                # Try to find in database
-                tool = session.query(ToolSQL).filter(
-                    ToolSQL.ecs_id == entity.tool_uuid
-                ).first()
-                if tool:
-                    self.tool = tool
+                # Try to find in database only if we don't already have the relationship
+                if not self.tool_id or self.tool_id != entity.tool_uuid:
+                    tool = session.query(ToolSQL).filter(
+                        ToolSQL.ecs_id == entity.tool_uuid
+                    ).first()
+                    if tool:
+                        self.tool = tool
         
         # Handle usage relationship
         if entity.usage:
             if entity.usage.ecs_id in orm_objects:
                 self.usage = orm_objects[entity.usage.ecs_id]
             else:
-                # Try to find in database
-                usage = session.query(UsageSQL).filter(
-                    UsageSQL.ecs_id == entity.usage.ecs_id
-                ).first()
-                if usage:
-                    self.usage = usage
+                # Try to find in database only if we don't already have the relationship
+                if not self.usage_id or self.usage_id != entity.usage.ecs_id:
+                    usage = session.query(UsageSQL).filter(
+                        UsageSQL.ecs_id == entity.usage.ecs_id
+                    ).first()
+                    if usage:
+                        self.usage = usage
 
 class SystemPromptSQL(EntityBase):
     """SQLAlchemy model for SystemPrompt entities."""

@@ -29,6 +29,7 @@ class EntityStorage(Protocol):
     def get_lineage_entities(self, lineage_id: UUID) -> List[Entity]: ...
     def has_lineage_id(self, lineage_id: UUID) -> bool: ...
     def get_lineage_ids(self, lineage_id: UUID) -> List[UUID]: ...
+    def merge_entity(self, entity: Entity, session: Any = None) -> Entity: ...
 
 class InMemoryEntityStorage(EntityStorage):
     """
@@ -40,6 +41,23 @@ class InMemoryEntityStorage(EntityStorage):
         self._entity_class_map: Dict[UUID, Type[Entity]] = {}
         self._lineages: Dict[UUID, List[UUID]] = {}
         self._inference_orchestrator: Optional[object] = None
+        
+    def merge_entity(self, entity: Entity, session: Any = None) -> Entity:
+        """
+        For in-memory storage, merge is the same as register.
+        This implementation ensures compatibility with the EntityStorage protocol.
+        
+        Args:
+            entity: Entity to merge
+            session: Ignored in in-memory storage
+            
+        Returns:
+            The registered entity
+        """
+        result = self.register(entity)
+        if result is None:
+            raise ValueError(f"Failed to merge entity {entity.ecs_id}")
+        return result
 
     def has_entity(self, entity_id: UUID) -> bool:
         """Check if entity exists in storage."""
@@ -286,10 +304,14 @@ class BaseEntitySQL(EntityBase):
     # Additional fields needed for storing any entity
     class_name = mapped_column(String(255), nullable=False)
     data = mapped_column(JSON, nullable=True)
+    entity_type = mapped_column(String(50), nullable=False, default="base_entity")
     
     __mapper_args__ = {
         "polymorphic_identity": "base_entity",
     }
+    
+    # Ensure base_entity table is created when Base.metadata.create_all is called
+    metadata = Base.metadata
     
     @classmethod
     def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
@@ -420,7 +442,10 @@ class SqlEntityStorage(EntityStorage):
     
     def register(self, entity_or_id: Union[Entity, UUID], session: Optional[Session] = None) -> Optional[Entity]:
         """
-        Register a root entity and all its sub-entities in a single transaction.
+        Register an entity and all its sub-entities in a single transaction.
+        
+        Uses the dependency graph to determine the correct processing order,
+        ensuring that dependencies are processed before dependent entities.
         
         Args:
             entity_or_id: Entity to register or UUID to retrieve
@@ -449,8 +474,57 @@ class SqlEntityStorage(EntityStorage):
                     self._logger.info(f"Entity {entity.ecs_id} has modifications, forking")
                     entity = entity.fork()
             
-            # Store the entire entity tree
-            self._store_entity_tree(entity, session)
+            # Initialize dependency graph if needed
+            if entity.deps_graph is None:
+                entity.initialize_deps_graph()
+                
+            # Get all entities in topological order (dependencies first)
+            # Check if deps_graph exists to satisfy type checker
+            if entity.deps_graph is None:
+                sorted_entities = [entity]  # Fallback if no dependency graph
+            else:
+                sorted_entities = entity.deps_graph.get_topological_sort()
+                
+            self._logger.info(f"Processing {len(sorted_entities)} entities in topological order")
+            
+            # Track processed entities and their ORM objects
+            orm_objects = {}
+            
+            # Phase 1: Create/update all entities
+            for curr_entity in sorted_entities:
+                # Check if this entity already exists in the database
+                existing_orm = None
+                if self.has_entity(curr_entity.ecs_id, session):
+                    # Find which table contains this entity
+                    for orm_class in self._entity_to_orm_map.values():
+                        existing_orm = session.query(orm_class).filter(
+                            orm_class.ecs_id == curr_entity.ecs_id
+                        ).first()
+                        if existing_orm:
+                            self._logger.debug(f"Found existing entity {curr_entity.ecs_id} in {orm_class.__name__}")
+                            orm_objects[curr_entity.ecs_id] = existing_orm
+                            break
+                
+                if existing_orm is None:
+                    # Create new ORM object for this entity
+                    orm_class = self._get_orm_class(curr_entity)
+                    self._logger.debug(f"Creating new ORM object for {curr_entity.ecs_id} using {orm_class.__name__}")
+                    orm_obj = orm_class.from_entity(curr_entity)
+                    session.add(orm_obj)
+                    orm_objects[curr_entity.ecs_id] = orm_obj
+                
+                # Cache entity type for future lookups
+                self._entity_class_map[curr_entity.ecs_id] = type(curr_entity)
+            
+            # Flush to ensure all objects have IDs
+            session.flush()
+            
+            # Phase 2: Handle relationships after all entities exist
+            for curr_entity in sorted_entities:
+                ecs_id = curr_entity.ecs_id
+                if ecs_id in orm_objects and hasattr(orm_objects[ecs_id], 'handle_relationships'):
+                    self._logger.debug(f"Handling relationships for {ecs_id}")
+                    orm_objects[ecs_id].handle_relationships(curr_entity, session, orm_objects)
             
             # Commit if using our own session
             if own_session:
@@ -797,6 +871,36 @@ class SqlEntityStorage(EntityStorage):
         
         raise ValueError(f"No ORM mapping found for {entity_type.__name__}")
     
+    def _safe_merge_entity(self, entity: Entity, session: Session) -> Any:
+        """
+        Safely merge an entity without session conflicts by always creating a fresh ORM object.
+        This avoids the "already attached to session" errors by never reusing ORM objects.
+        
+        Args:
+            entity: Entity to merge
+            session: Current session
+            
+        Returns:
+            Merged ORM object
+        """
+        # Get ORM class for entity
+        orm_class = self._get_orm_class(entity)
+        
+        # Always create a fresh ORM object to avoid session conflicts
+        orm_obj = orm_class.from_entity(entity)
+        
+        # Use merge to handle any session issues
+        try:
+            merged = session.merge(orm_obj)
+            return merged
+        except Exception as e:
+            self._logger.error(f"Error during safe merge of {entity.ecs_id}: {str(e)}")
+            # Try an alternative approach - expunge and add
+            session.expunge_all()  # Detach all objects
+            session.add(orm_obj)   # Add fresh object
+            session.flush()        # Flush to database
+            return orm_obj
+
     def _store_entity_tree(self, entity: Entity, session: Session) -> None:
         """
         Store an entire entity tree in a single database transaction.
@@ -823,53 +927,99 @@ class SqlEntityStorage(EntityStorage):
             entities_to_store[sub.ecs_id] = sub
             
         self._logger.info(f"Storing {len(entities_to_store)} entities in tree")
-            
+        
         # Phase 1: Store all entities first (without relationships)
         for ecs_id, curr_entity in entities_to_store.items():
-            if ecs_id in processed_ids:
+            # Skip if already processed or already being registered elsewhere
+            if ecs_id in processed_ids or curr_entity.is_being_registered:
+                self._logger.debug(f"Skipping entity {ecs_id} - already processed or being registered")
                 continue
+            
+            # Mark as being registered to prevent recursive registration
+            curr_entity.is_being_registered = True
+            
+            try:
+                # Check if entity already exists in database
+                existing = session.query(BaseEntitySQL).filter(
+                    BaseEntitySQL.ecs_id == curr_entity.ecs_id
+                ).first()
                 
-            # Check if entity already exists
-            if self.has_entity(ecs_id, session):
-                self._logger.debug(f"Entity {ecs_id} already exists, retrieving")
-                # Find which table contains this entity
-                for orm_class in self._entity_to_orm_map.values():
-                    orm_obj = session.query(orm_class).filter(orm_class.ecs_id == ecs_id).first()
-                    if orm_obj:
-                        orm_objects[ecs_id] = orm_obj
-                        # Cache entity type
-                        self._entity_class_map[ecs_id] = type(curr_entity)
-                        break
-            else:
-                self._logger.debug(f"Creating new entity {ecs_id} of type {type(curr_entity).__name__}")
-                # Create new ORM object for this entity
-                orm_class = self._get_orm_class(curr_entity)
-                orm_obj = orm_class.from_entity(curr_entity)
-                session.add(orm_obj)
+                if existing:
+                    self._logger.debug(f"Entity {ecs_id} already exists in database, retrieving")
+                    # If entity exists, get its ORM object which should already be in session
+                    orm_class = self._get_orm_class(curr_entity)
+                    orm_obj = session.query(orm_class).filter(
+                        orm_class.ecs_id == curr_entity.ecs_id
+                    ).first()
+                else:
+                    self._logger.debug(f"Creating new entity {ecs_id} of type {type(curr_entity).__name__}")
+                    # Create a fresh ORM object for a new entity
+                    orm_obj = self._safe_merge_entity(curr_entity, session)
+                
+                # Add to tracking collections
                 orm_objects[ecs_id] = orm_obj
                 
                 # Cache entity type
                 self._entity_class_map[ecs_id] = type(curr_entity)
-                
-            processed_ids.add(ecs_id)
-            
+                processed_ids.add(ecs_id)
+            finally:
+                # Reset flag to allow future registrations
+                curr_entity.is_being_registered = False
+        
         # Flush to ensure all objects have IDs
         session.flush()
         
-        # Phase 2: Handle relationships
-        for ecs_id, orm_obj in orm_objects.items():
-            if hasattr(orm_obj, 'handle_relationships'):
-                curr_entity = entities_to_store[ecs_id]
+        # Phase 2: Handle relationships in dependency order (bottom-up)
+        # Process entities in topological order if possible
+        sorted_entities = []
+        if entity.deps_graph:
+            try:
+                # Get entities in topological order (dependencies first)
+                sorted_entities = entity.deps_graph.get_topological_sort()
+            except Exception as e:
+                self._logger.warning(f"Error getting topological sort: {str(e)}")
+                # Fall back to entities_to_store order
+                sorted_entities = list(entities_to_store.values())
+        else:
+            # Fall back to entities_to_store order
+            sorted_entities = list(entities_to_store.values())
+            
+        # Process relationships in dependency order
+        for curr_entity in sorted_entities:
+            ecs_id = curr_entity.ecs_id
+            if ecs_id in orm_objects and hasattr(orm_objects[ecs_id], 'handle_relationships'):
                 try:
                     self._logger.debug(f"Handling relationships for {ecs_id}")
-                    orm_obj.handle_relationships(curr_entity, session, orm_objects)
+                    # Use the relationship handling method
+                    orm_objects[ecs_id].handle_relationships(curr_entity, session, orm_objects)
                 except Exception as e:
                     self._logger.error(f"Error handling relationships for {ecs_id}: {str(e)}")
                     raise
-                    
+        
         # Flush again to update relationships
         session.flush()
 
 # End of SqlEntityStorage implementation
 
+    def merge_entity(self, entity: Entity, session: Optional[Session] = None) -> Entity:
+        """
+        Merge an entity into a session, creating a fresh ORM object to avoid session conflicts.
+        This method simply delegates to register as it now handles conflicts properly.
+        
+        Args:
+            entity: Entity to merge
+            session: Optional session to use (will create one if not provided)
+            
+        Returns:
+            The merged entity
+        """
+        self._logger.debug(f"Merging entity {entity.ecs_id} of type {type(entity).__name__}")
+        
+        # Simply use the register method which now handles entities in dependency order
+        # and avoids session conflicts by design
+        result = self.register(entity, session)
+        # Cast to satisfy type checker (register can return None but merge_entity promises Entity)
+        if result is None:
+            raise ValueError(f"Failed to merge entity {entity.ecs_id}")
+        return result
 

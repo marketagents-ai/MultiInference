@@ -11,7 +11,9 @@ from pydantic import Field, BaseModel
 from io import StringIO
 
 # Import directly from the main module - we're testing the actual implementation
-from minference.ecs.entity import Entity, EntityRegistry, InMemoryEntityStorage, entity_tracer
+from minference.ecs.entity import Entity
+from minference.ecs.storage import InMemoryEntityStorage
+from minference.ecs.enregistry import EntityRegistry, entity_tracer
 from minference.ecs.caregistry import CallableRegistry
 from minference.threads.models import (
     LLMConfig, LLMClient, ResponseFormat, CallableTool, StructuredTool, ChatMessage, 
