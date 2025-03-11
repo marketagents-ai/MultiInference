@@ -83,24 +83,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import (
     Mapped, Session, mapped_column, relationship, declarative_base
 )
+from minference.ecs.base_registry import BaseRegistry
 
 # Create SQLAlchemy Base for the entity models
 Base = declarative_base()
 
 ##############################
-# 1) The base_registry
-##############################
-class BaseRegistry:
-    """
-    A minimal base class that just has a get_registry_status method
-    or any other common logic. We rely on the subclass to store
-    the actual `_storage`.
-    """
-    @classmethod
-    def get_registry_status(cls) -> Dict[str, Any]:
-        return {"base_registry": True}
 
-##############################
 # 2) Type Definitions
 ##############################
 
