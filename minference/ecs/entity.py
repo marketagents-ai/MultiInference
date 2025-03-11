@@ -144,9 +144,10 @@ def compare_entity_fields(
                 'sql_root', 'deps_graph', 'is_being_registered'
             }
     
-    # Get field sets for both entities
-    entity1_fields = set(entity1.model_fields.keys()) - exclude_fields
-    entity2_fields = set(entity2.model_fields.keys()) - exclude_fields
+    # Get field sets for both entities (ensure exclude_fields is a set for proper type checking)
+    exclude_set = set(exclude_fields) if exclude_fields is not None else set()
+    entity1_fields = set(entity1.model_fields.keys()) - exclude_set
+    entity2_fields = set(entity2.model_fields.keys()) - exclude_set
     
     logger.debug(f"Comparing {len(entity1_fields)} fields after excluding implementation fields")
     
@@ -836,7 +837,7 @@ class Entity(BaseModel):
                         # But only recurse if we haven't visited this entity yet
                         if item.ecs_id not in visited:
                             # Create a copy of the visited set for this recursion branch
-                            branch_visited = visited.copy()
+                            branch_visited = set(visited)  # Use set constructor instead of .copy()
                             nested.update(item.get_sub_entities(branch_visited))
             
             # Handle direct entity references
@@ -846,7 +847,7 @@ class Entity(BaseModel):
                 # But only recurse if we haven't visited this entity yet
                 if value.ecs_id not in visited:
                     # Create a copy of the visited set for this recursion branch
-                    branch_visited = visited.copy() 
+                    branch_visited = set(visited)  # Use set constructor instead of .copy()
                     nested.update(value.get_sub_entities(branch_visited))
                 
         return nested

@@ -446,8 +446,8 @@ class ChatThreadSQL(EntityBase):
                             messages.append(message_orm)
                         else:
                             # Message not found - create a new ORM object with the current thread
-                            message_copy = message.copy()
-                            message_copy.chat_thread_id = self.ecs_id
+                            # Using model_copy() instead of deprecated copy()
+                            message_copy = message.model_copy(update={"chat_thread_id": self.ecs_id})
                             message_orm = ChatMessageSQL.from_entity(message_copy)
                             session.add(message_orm)
                             messages.append(message_orm)

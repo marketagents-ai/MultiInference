@@ -52,8 +52,9 @@ class OpenAIRequest(BaseModel):
     top_p: Optional[float] = Field(default=None)
     user: Optional[str] = Field(default=None)
 
-    class Config:
-        extra = 'forbid'
+    model_config = {
+        "extra": "forbid"
+    }
 
 
 class AnthropicRequest(BaseModel):

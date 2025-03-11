@@ -64,8 +64,9 @@ class OpenAIRequest(BaseModel):
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(default=None)
     max_completion_tokens: Optional[int] = Field(default=None)
     include_reasoning: Optional[bool] = Field(default=None)
-    class Config:
-        extra = 'forbid'
+    model_config = {
+        "extra": "forbid"
+    }
 
     @model_validator(mode="after")
     def validate_max_completion_tokens(self) -> Self:

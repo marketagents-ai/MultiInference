@@ -369,7 +369,7 @@ class EntityDependencyGraph(BaseModel):
             if node_id in depths:
                 return depths[node_id]
                 
-            path_copy = path.copy()
+            path_copy = set(path)  # Use set constructor instead of .copy()
             path_copy.add(node_id)
             
             # If no dependencies, depth is 0
