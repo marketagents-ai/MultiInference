@@ -979,3 +979,34 @@ Now that we've fixed the missing fields in the SQL models, we should review thes
    - Comments mentioning workarounds for SQL limitations
 
 These should be reviewed by the next Claude instance with full context of all tests.
+
+### Critical Issue: Excessive Entity Forking
+
+During our implementation and testing, we identified a critical issue with the entity modification detection system that causes excessive entity forking, particularly when using the SQL backend:
+
+#### Observed Behavior
+1. **Redundant Forking Operations**: Entities are being forked multiple times for the same logical change
+2. **Cascading Modification Checks**: Each fork triggers additional modification checks, creating a chain reaction
+3. **Bloated Lineage Graphs**: The mermaid visualization shows excessive entity nodes for simple operations
+4. **Memory and Performance Impact**: Each redundant fork consumes memory and processing time
+
+#### Root Causes
+1. **Inconsistent Relationship Loading**: When entities are loaded from SQL storage, relationships are not consistently loaded before comparison:
+   ```
+   Field 'history' has different list lengths: 4 vs 0
+   ```
+
+2. **State Comparison Limitations**: The current comparison mechanism doesn't account for the difference between in-memory and freshly-loaded entities:
+   ```
+   Checking modifications: ChatThread(a8e2dc36...) vs ChatThread(a8e2dc36...)
+   ```
+
+3. **Storage Layer Abstraction Challenges**: Since entity.py must remain agnostic of specific entity types, it cannot make assumptions about which fields should be eagerly loaded
+
+#### Impact
+1. **Performance Degradation**: Excessive forking operations significantly impact performance
+2. **Memory Consumption**: Each fork creates a new entity set, increasing memory usage
+3. **Lineage Complexity**: Entity history becomes difficult to interpret with redundant nodes
+4. **API Complexity**: Applications using the API must handle duplicate entity forks
+
+This represents a fundamental architectural challenge: the modification detection system needs to reconcile the difference between in-memory and storage-loaded entity representations without having specific knowledge of the entity schemas. Any solution must maintain the storage-agnostic design of the entity.py module while providing consistent modification detection.

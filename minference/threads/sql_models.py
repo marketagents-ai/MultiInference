@@ -64,37 +64,54 @@ chat_thread_tools = Table(
     Column("tool_id", Uuid, ForeignKey("tool.ecs_id"), primary_key=True),
 )
 
-# Base entity SQL for entities without specific models
+# Add this class after the Base definition but before other entity classes
 class BaseEntitySQL(EntityBase):
-    """Generic fallback table for storing entities without specific models."""
+    """SQLAlchemy model for generic entity storage."""
     __tablename__ = "base_entity"
     
-    # JSON data for entity fields
-    data = mapped_column(JSON, nullable=False)
+    # Additional fields needed for storing any entity
     entity_class = mapped_column(String(100), nullable=False)
+    data = mapped_column(JSON, nullable=True)
     
     __mapper_args__ = {
         "polymorphic_identity": "base_entity",
     }
     
     @classmethod
-    def from_entity(cls, entity: 'Entity') -> 'BaseEntitySQL':
+    def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
         """Convert from Entity to SQL model."""
+        # Convert UUID objects to strings for JSON serialization
+        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
+        
         return cls(
             ecs_id=entity.ecs_id,
             lineage_id=entity.lineage_id,
             parent_id=entity.parent_id,
             created_at=entity.created_at,
-            old_ids=[str(uid) for uid in entity.old_ids] if entity.old_ids else [],
-            data=entity.model_dump(),
-            entity_class=entity.__class__.__name__,
+            old_ids=str_old_ids,
+            entity_class=f"{entity.__class__.__module__}.{entity.__class__.__name__}",
+            data=entity.entity_dump(),
             entity_type="base_entity"
         )
     
-    def to_entity(self) -> 'Entity':
+    def to_entity(self) -> Entity:
         """Convert from SQL model to Entity."""
-        from minference.threads.models import Entity  # Avoid circular import
-        return Entity(**self.data)
+        # Import dynamically to avoid circular imports
+        from minference.ecs.entity import dynamic_import
+        
+        # Get the entity class
+        entity_class = dynamic_import(self.entity_class)
+        
+        # Create the entity from stored data
+        return entity_class.model_validate({
+            "ecs_id": self.ecs_id,
+            "lineage_id": self.lineage_id,
+            "parent_id": self.parent_id,
+            "created_at": self.created_at,
+            "old_ids": [UUID(uid) for uid in self.old_ids] if self.old_ids else [],
+            "from_storage": True,
+            **self.data
+        })
 
 class ChatThreadSQL(EntityBase):
     """SQLAlchemy model for ChatThread entities."""
@@ -1034,5 +1051,6 @@ ENTITY_MODEL_MAP = {
     GeneratedJsonObject: GeneratedJsonObjectSQL,
     RawOutput: RawOutputSQL,
     ProcessedOutput: ProcessedOutputSQL,
-    RequestLimits: RequestLimitsSQL
+    RequestLimits: RequestLimitsSQL,
+    Entity: BaseEntitySQL
 }

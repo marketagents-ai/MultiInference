@@ -1042,20 +1042,33 @@ class EntityBase(Base):
         """Handle entity relationships for this model."""
         pass
 
-class BaseEntitySQL(EntityBase):
-    """Fallback table for storing any Entity if no specialized table is found."""
-    __tablename__ = "baseentitysql"
+class BaseEntitySQL(Protocol):
+    """
+    Protocol for SQL model of generic entity storage.
     
-    # The dotted Python path for the real class
-    class_name: Mapped[str] = mapped_column(String)
-
-    # Non-versioning fields are stored here as JSON
-    data: Mapped[Dict[str, Any]] = mapped_column(JSON)
-
+    Concrete implementation should be defined in a SQL-specific module
+    and inherit from the appropriate SQLAlchemy base class.
+    """
+    __tablename__: ClassVar[str] = "base_entity"
+    
+    # Required attributes
+    ecs_id: UUID
+    lineage_id: UUID
+    parent_id: Optional[UUID]
+    created_at: datetime
+    old_ids: List[str]
+    class_name: str
+    data: Dict[str, Any]
+    
+    @classmethod
+    def from_entity(cls, entity: Entity) -> Any:
+        """Convert from Entity to SQL model."""
+        # This is a protocol method that concrete implementations must provide
+        ...
+    
     def to_entity(self) -> Entity:
-        cls_obj = dynamic_import(self.class_name)
-        
-        # Convert old_ids strings back to UUID objects if needed
+        """Convert from SQL model to Entity."""
+        # This is a protocol method that concrete implementations must provide
         uuid_old_ids = []
         if self.old_ids:
             for old_id in self.old_ids:
@@ -1070,31 +1083,14 @@ class BaseEntitySQL(EntityBase):
             "lineage_id": self.lineage_id,
             "parent_id": self.parent_id,
             "created_at": self.created_at,
-            "old_ids": uuid_old_ids,  # Converted back to UUID objects
+            "old_ids": uuid_old_ids,
             "from_storage": True,
             **self.data
         }
+        
+        # Import dynamically to avoid circular imports
+        cls_obj = dynamic_import(self.class_name)
         return cls_obj(**combined)
-
-    @classmethod
-    def from_entity(cls, entity: Entity) -> 'BaseEntitySQL':
-        versioning_fields = {"ecs_id", "lineage_id", "parent_id", "created_at", "old_ids", "live_id", "from_storage", "force_parent_fork"}
-        raw = entity.model_dump()
-        data_only = {k: v for k, v in raw.items() if k not in versioning_fields}
-        
-        # Convert UUID objects to strings for JSON serialization
-        str_old_ids = [str(uid) for uid in entity.old_ids] if entity.old_ids else []
-        
-        # The SQLAlchemy Uuid type will handle the conversion of Python UUID objects to database format
-        return cls(
-            ecs_id=entity.ecs_id,
-            lineage_id=entity.lineage_id,
-            parent_id=entity.parent_id,
-            created_at=entity.created_at,
-            old_ids=str_old_ids,  # Use string representation for JSON serialization
-            class_name=f"{entity.__class__.__module__}.{entity.__class__.__qualname__}",
-            data=data_only
-        )
 
 class SqlEntityStorage(EntityStorage):
     """
@@ -1125,7 +1121,8 @@ class SqlEntityStorage(EntityStorage):
         
         # If BaseEntitySQL is available, use it as fallback
         if Entity not in self._entity_to_orm_map:
-            self._entity_to_orm_map[Entity] = BaseEntitySQL
+            # Use cast to tell type checker this is compatible
+            self._entity_to_orm_map[Entity] = cast(Type[EntityBase], BaseEntitySQL)
             self._logger.info("Added BaseEntitySQL as fallback ORM mapping")
         
         # Cache to avoid repeated lookups

@@ -10,7 +10,7 @@ from minference.ecs.entity import EntityRegistry
 import os
 import logging
 #set logging level to debug
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 async def main():
     load_dotenv()
     EntityRegistry()
