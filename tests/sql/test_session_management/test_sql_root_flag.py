@@ -91,173 +91,201 @@ def setup_sql_storage(session_factory):
     # Restore original storage
     EntityRegistry._storage = original_storage
 
-def test_sql_root_flag_effect(setup_sql_storage, session):
+def test_sql_root_flag_effect(setup_sql_storage, session_factory):
     """Test how the sql_root flag affects entity registration."""
-    # Create a minimal thread
-    llm_config = LLMConfig(
-        client=LLMClient.openai,
-        model="gpt-4",
-        response_format=ResponseFormat.text
-    )
-    
-    # By default, sql_root is True on all entities
-    print(f"Default sql_root on LLMConfig: {llm_config.sql_root}")
-    
-    # Register config first
-    registered_config = EntityRegistry.register(llm_config)
-    print(f"Registered config: {registered_config.ecs_id}")
-    
-    # Create and register thread
-    thread = ChatThread(
-        name="Test Thread",
-        llm_config=registered_config
-    )
-    print(f"Default sql_root on Thread: {thread.sql_root}")
-    
-    # Register the thread
-    registered_thread = EntityRegistry.register(thread)
-    print(f"Registered thread: {registered_thread.ecs_id}")
-    
-    # Count SQL entities before adding any messages
-    initial_thread_count = session.query(ChatThreadSQL).count()
-    initial_message_count = session.query(ChatMessageSQL).count()
-    print(f"Initial thread count: {initial_thread_count}")
-    print(f"Initial message count: {initial_message_count}")
-    
-    print("\n=== SCENARIO 1: Messages with sql_root=True (DEFAULT) ===")
-    # Create multiple messages with sql_root=True (default)
-    messages_with_sql_root = []
-    for i in range(3):
-        message = ChatMessage(
-            role=MessageRole.user if i % 2 == 0 else MessageRole.assistant,
-            content=f"Message {i+1} with sql_root=True",
-            chat_thread_id=registered_thread.ecs_id,
-            # Default sql_root=True
+    # Use a fresh session for each part of the test to avoid detached instance errors
+    with session_factory() as session:
+        # Create a minimal thread
+        llm_config = LLMConfig(
+            client=LLMClient.openai,
+            model="gpt-4",
+            response_format=ResponseFormat.text
         )
-        print(f"Message {i+1} sql_root: {message.sql_root}")
-        registered_message = EntityRegistry.register(message)
-        messages_with_sql_root.append(registered_message)
-        print(f"Registered message {i+1}: {registered_message.ecs_id}")
-    
-    # Count after adding messages with sql_root=True
-    count_after_true = session.query(ChatMessageSQL).count()
-    print(f"Count after adding 3 messages with sql_root=True: {count_after_true}")
-    
-    # Get all messages for thread 1 to check their thread_id references
-    thread1_messages_before = session.query(ChatMessageSQL).filter(
-        ChatMessageSQL.chat_thread_id == registered_thread.ecs_id
-    ).all()
-    print(f"Thread 1 message count before re-registration: {len(thread1_messages_before)}")
-    print("Message IDs and their thread_id values:")
-    for msg in thread1_messages_before:
-        print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
-    
-    # Update registered_thread.history to include the messages
-    # (simulating what happens when a thread naturally accumulates messages)
-    registered_thread.history = messages_with_sql_root
-    print(f"Updated thread history, now has {len(registered_thread.history)} messages")
-    
-    # Now register the thread again to see if it re-registers the messages
-    print("\nRe-registering thread with messages with sql_root=True...")
-    re_registered_thread = EntityRegistry.register(registered_thread)
-    print(f"Re-registered thread: {re_registered_thread.ecs_id}")
-    
-    # Count messages after thread re-registration
-    count_after_thread_reregister = session.query(ChatMessageSQL).count()
-    print(f"Count after thread re-registration: {count_after_thread_reregister}")
-    print(f"Difference: {count_after_thread_reregister - count_after_true} new messages")
-    
-    # Get all messages for thread 1 after re-registration
-    thread1_messages_after = session.query(ChatMessageSQL).filter(
-        ChatMessageSQL.chat_thread_id == registered_thread.ecs_id
-    ).all()
-    print(f"Thread 1 message count after re-registration: {len(thread1_messages_after)}")
-    print("Message IDs and their thread_id values:")
-    for msg in thread1_messages_after:
-        print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
-    
-    # Check for duplicate messages by comparing ecs_ids
-    message_ids_before = {msg.ecs_id for msg in thread1_messages_before}
-    message_ids_after = {msg.ecs_id for msg in thread1_messages_after}
-    new_message_ids = message_ids_after - message_ids_before
-    print(f"New message IDs after re-registration: {new_message_ids}")
-    
-    print("\n=== SCENARIO 2: Messages with sql_root=False ===")
-    # Create a fresh thread for comparison
-    new_thread = ChatThread(
-        name="Test Thread 2",
-        llm_config=registered_config
-    )
-    registered_new_thread = EntityRegistry.register(new_thread)
-    print(f"Created new thread: {registered_new_thread.ecs_id}")
-    
-    # Now create messages with sql_root=False
-    messages_without_sql_root = []
-    for i in range(3):
-        message = ChatMessage(
-            role=MessageRole.user if i % 2 == 0 else MessageRole.assistant,
-            content=f"Message {i+1} with sql_root=False",
-            chat_thread_id=registered_new_thread.ecs_id,
-            sql_root=False  # Explicitly set to False
+        
+        # By default, sql_root is True on all entities
+        print(f"Default sql_root on LLMConfig: {llm_config.sql_root}")
+        
+        # Register config first
+        registered_config = EntityRegistry.register(llm_config)
+        print(f"Registered config: {registered_config.ecs_id}")
+        
+        # Create and register thread
+        thread = ChatThread(
+            name="Test Thread",
+            llm_config=registered_config
         )
-        print(f"Message {i+1} sql_root: {message.sql_root}")
-        registered_message = EntityRegistry.register(message)
-        messages_without_sql_root.append(registered_message)
-        print(f"Registered message {i+1}: {registered_message.ecs_id}")
-    
-    # Count after adding messages with sql_root=False
-    count_after_false = session.query(ChatMessageSQL).count()
-    print(f"Count after adding 3 messages with sql_root=False: {count_after_false}")
-    
-    # Get all messages for thread 2 to check their thread_id references
-    thread2_messages_before = session.query(ChatMessageSQL).filter(
-        ChatMessageSQL.chat_thread_id == registered_new_thread.ecs_id
-    ).all()
-    print(f"Thread 2 message count before re-registration: {len(thread2_messages_before)}")
-    print("Message IDs and their thread_id values:")
-    for msg in thread2_messages_before:
-        print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
-    
-    # Update registered_new_thread.history to include the messages
-    registered_new_thread.history = messages_without_sql_root
-    print(f"Updated thread history, now has {len(registered_new_thread.history)} messages")
-    
-    # Re-register thread with messages that have sql_root=False
-    print("\nRe-registering thread with messages with sql_root=False...")
-    re_registered_new_thread = EntityRegistry.register(registered_new_thread)
-    print(f"Re-registered thread 2: {re_registered_new_thread.ecs_id}")
-    
-    # Count messages after second thread re-registration
-    final_count = session.query(ChatMessageSQL).count()
-    print(f"Final message count: {final_count}")
-    print(f"Difference: {final_count - count_after_false} new messages")
-    
-    # Get all messages for thread 2 after re-registration
-    thread2_messages_after = session.query(ChatMessageSQL).filter(
-        ChatMessageSQL.chat_thread_id == registered_new_thread.ecs_id
-    ).all()
-    print(f"Thread 2 message count after re-registration: {len(thread2_messages_after)}")
-    print("Message IDs and their thread_id values:")
-    for msg in thread2_messages_after:
-        print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
-    
-    # Check for duplicate messages by comparing ecs_ids
-    message_ids_before2 = {msg.ecs_id for msg in thread2_messages_before}
-    message_ids_after2 = {msg.ecs_id for msg in thread2_messages_after}
-    new_message_ids2 = message_ids_after2 - message_ids_before2
-    print(f"New message IDs after re-registration: {new_message_ids2}")
-    
+        print(f"Default sql_root on Thread: {thread.sql_root}")
+        
+        # Register the thread
+        registered_thread = EntityRegistry.register(thread)
+        print(f"Registered thread: {registered_thread.ecs_id}")
+        
+        # Count SQL entities before adding any messages
+        initial_thread_count = session.query(ChatThreadSQL).count()
+        initial_message_count = session.query(ChatMessageSQL).count()
+        print(f"Initial thread count: {initial_thread_count}")
+        print(f"Initial message count: {initial_message_count}")
+        
+        # Commit to ensure everything is saved properly
+        session.commit()
+
+    # SCENARIO 1: Messages with default sql_root=False
+    print("\n=== SCENARIO 1: Messages with sql_root=False (DEFAULT for ChatMessage) ===")
+    with session_factory() as session:
+        # Create multiple messages with sql_root=False (default for ChatMessage)
+        messages_with_default_sql_root = []
+        for i in range(3):
+            message = ChatMessage(
+                role=MessageRole.user if i % 2 == 0 else MessageRole.assistant,
+                content=f"Message {i+1} with default sql_root",
+                chat_thread_id=registered_thread.ecs_id,
+                # Default sql_root=False for ChatMessage
+            )
+            print(f"Message {i+1} sql_root: {message.sql_root}")
+            registered_message = EntityRegistry.register(message)
+            messages_with_default_sql_root.append(registered_message)
+            print(f"Registered message {i+1}: {registered_message.ecs_id}")
+        
+        # Count after adding messages with default sql_root=False
+        count_after_default = session.query(ChatMessageSQL).count()
+        print(f"Count after adding 3 messages with default sql_root=False: {count_after_default}")
+        
+        # Get all messages for thread 1 to check their thread_id references
+        thread1_messages_before = session.query(ChatMessageSQL).filter(
+            ChatMessageSQL.chat_thread_id == registered_thread.ecs_id
+        ).all()
+        thread1_count_before = len(thread1_messages_before)
+        thread1_ids_before = {msg.ecs_id for msg in thread1_messages_before}
+        
+        print(f"Thread 1 message count before re-registration: {thread1_count_before}")
+        print("Message IDs and their thread_id values:")
+        for msg in thread1_messages_before:
+            print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
+        
+        # Update registered_thread.history to include the messages
+        # (simulating what happens when a thread naturally accumulates messages)
+        registered_thread.history = messages_with_default_sql_root
+        print(f"Updated thread history, now has {len(registered_thread.history)} messages")
+        
+        # Now register the thread again to see if it re-registers the messages
+        print("\nRe-registering thread with messages with default sql_root=False...")
+        re_registered_thread = EntityRegistry.register(registered_thread)
+        print(f"Re-registered thread: {re_registered_thread.ecs_id}")
+        
+        # Count messages after thread re-registration
+        count_after_reregister = session.query(ChatMessageSQL).count()
+        print(f"Count after thread re-registration: {count_after_reregister}")
+        print(f"Difference: {count_after_reregister - count_after_default} new messages")
+        
+        # Get all messages for thread 1 after re-registration with a fresh query
+        thread1_messages_after = session.query(ChatMessageSQL).filter(
+            ChatMessageSQL.chat_thread_id == registered_thread.ecs_id
+        ).all()
+        thread1_count_after = len(thread1_messages_after)
+        thread1_ids_after = {msg.ecs_id for msg in thread1_messages_after}
+        
+        print(f"Thread 1 message count after re-registration: {thread1_count_after}")
+        print("Message IDs and their thread_id values:")
+        for msg in thread1_messages_after:
+            print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
+        
+        # Check for duplicate messages by comparing ecs_ids
+        new_message_ids = thread1_ids_after - thread1_ids_before
+        print(f"New message IDs after re-registration: {new_message_ids}")
+        
+        # Check if duplication occurred
+        duplication_occurred_thread1 = thread1_count_after > thread1_count_before
+        print(f"Duplication with default sql_root=False: {duplication_occurred_thread1}")
+        
+        # Commit changes
+        session.commit()
+
+    # SCENARIO 2: Messages with explicit sql_root=True
+    print("\n=== SCENARIO 2: Messages with sql_root=True (EXPLICITLY SET) ===")
+    with session_factory() as session:
+        # Create a fresh thread for comparison
+        new_thread = ChatThread(
+            name="Test Thread 2",
+            llm_config=registered_config
+        )
+        registered_new_thread = EntityRegistry.register(new_thread)
+        print(f"Created new thread: {registered_new_thread.ecs_id}")
+        
+        # Now create messages with sql_root=True (explicitly overriding the default)
+        messages_with_explicit_sql_root = []
+        for i in range(3):
+            message = ChatMessage(
+                role=MessageRole.user if i % 2 == 0 else MessageRole.assistant,
+                content=f"Message {i+1} with sql_root=True",
+                chat_thread_id=registered_new_thread.ecs_id,
+                sql_root=True  # Explicitly set to True (overriding default)
+            )
+            print(f"Message {i+1} sql_root: {message.sql_root}")
+            registered_message = EntityRegistry.register(message)
+            messages_with_explicit_sql_root.append(registered_message)
+            print(f"Registered message {i+1}: {registered_message.ecs_id}")
+        
+        # Count after adding messages with sql_root=True
+        count_after_explicit = session.query(ChatMessageSQL).count()
+        print(f"Count after adding 3 messages with sql_root=True (explicit): {count_after_explicit}")
+        
+        # Get all messages for thread 2 to check their thread_id references
+        thread2_messages_before = session.query(ChatMessageSQL).filter(
+            ChatMessageSQL.chat_thread_id == registered_new_thread.ecs_id
+        ).all()
+        thread2_count_before = len(thread2_messages_before)
+        thread2_ids_before = {msg.ecs_id for msg in thread2_messages_before}
+        
+        print(f"Thread 2 message count before re-registration: {thread2_count_before}")
+        print("Message IDs and their thread_id values:")
+        for msg in thread2_messages_before:
+            print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
+        
+        # Update registered_new_thread.history to include the messages
+        registered_new_thread.history = messages_with_explicit_sql_root
+        print(f"Updated thread history, now has {len(registered_new_thread.history)} messages")
+        
+        # Re-register thread with messages that have sql_root=True (explicitly set)
+        print("\nRe-registering thread with messages with sql_root=True (explicit)...")
+        re_registered_new_thread = EntityRegistry.register(registered_new_thread)
+        print(f"Re-registered thread 2: {re_registered_new_thread.ecs_id}")
+        
+        # Count messages after second thread re-registration
+        final_count = session.query(ChatMessageSQL).count()
+        print(f"Final message count: {final_count}")
+        print(f"Difference: {final_count - count_after_explicit} new messages")
+        
+        # Get all messages for thread 2 after re-registration
+        thread2_messages_after = session.query(ChatMessageSQL).filter(
+            ChatMessageSQL.chat_thread_id == registered_new_thread.ecs_id
+        ).all()
+        thread2_count_after = len(thread2_messages_after)
+        thread2_ids_after = {msg.ecs_id for msg in thread2_messages_after}
+        
+        print(f"Thread 2 message count after re-registration: {thread2_count_after}")
+        print("Message IDs and their thread_id values:")
+        for msg in thread2_messages_after:
+            print(f"  Message {msg.ecs_id} -> thread_id: {msg.chat_thread_id}")
+        
+        # Check for duplicate messages by comparing ecs_ids
+        new_message_ids2 = thread2_ids_after - thread2_ids_before
+        print(f"New message IDs after re-registration: {new_message_ids2}")
+        
+        # Check if duplication occurred
+        duplication_occurred_thread2 = thread2_count_after > thread2_count_before
+        print(f"Duplication with explicit sql_root=True: {duplication_occurred_thread2}")
+        
+        # Commit changes
+        session.commit()
+
+    # SUMMARY
     print("\n=== SUMMARY ===")
-    print(f"Thread 1 (sql_root=True): {len(thread1_messages_before)} before, {len(thread1_messages_after)} after")
-    print(f"Thread 2 (sql_root=False): {len(thread2_messages_before)} before, {len(thread2_messages_after)} after")
+    print(f"Thread 1 (messages with default sql_root=False): {thread1_count_before} before, {thread1_count_after} after")
+    print(f"Thread 2 (messages with explicit sql_root=True): {thread2_count_before} before, {thread2_count_after} after")
     
-    # Check if any duplication occurred
-    duplication_occurred_thread1 = len(thread1_messages_after) > len(thread1_messages_before)
-    duplication_occurred_thread2 = len(thread2_messages_after) > len(thread2_messages_before)
+    print(f"Duplication with default sql_root=False: {duplication_occurred_thread1}")
+    print(f"Duplication with explicit sql_root=True: {duplication_occurred_thread2}")
     
-    print(f"Duplication with sql_root=True: {duplication_occurred_thread1}")
-    print(f"Duplication with sql_root=False: {duplication_occurred_thread2}")
-    
-    # The test fails if re-registering a thread with sql_root=True messages creates duplicate messages
-    assert not duplication_occurred_thread1, "Re-registering thread with sql_root=True messages created duplicates"
-    assert not duplication_occurred_thread2, "Re-registering thread with sql_root=False messages created duplicates"
+    # The test fails if re-registering a thread with messages creates duplicate messages
+    assert not duplication_occurred_thread1, "Re-registering thread with default sql_root=False messages created duplicates"
+    assert not duplication_occurred_thread2, "Re-registering thread with explicit sql_root=True messages created duplicates"
