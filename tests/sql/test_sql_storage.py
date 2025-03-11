@@ -33,7 +33,9 @@ from tests.sql.test_sql_entity_conversion import (
 )
 
 # Import the entity storage implementation
-from minference.ecs.entity import Entity, EntityRegistry, create_association_table, SqlEntityStorage, BaseEntitySQL, Base as EntityBase_Base, EntityBase
+from minference.ecs.entity import Entity
+from minference.ecs.enregistry import EntityRegistry
+from minference.ecs.storage import SqlEntityStorage, BaseEntitySQL, Base as EntityBase_Base, EntityBase, create_association_table
 # We don't need to import EntityBase from sql_models since we now have it in entity.py
 # from minference.threads.sql_models import EntityBase
 

@@ -9,7 +9,7 @@ from minference.ecs.entity import Entity
 from minference.ecs.enregistry import EntityRegistry, entity_tracer
 from minference.ecs.dependency.graph import EntityDependencyGraph
 
-from conftest import SimpleEntity, ParentEntity
+from tests.ecs_tests.conftest import SimpleEntity, ParentEntity
 
 class TestEntityCreation:
     """Tests for entity creation and registration."""

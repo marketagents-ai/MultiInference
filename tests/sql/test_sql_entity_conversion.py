@@ -42,7 +42,7 @@ from sqlalchemy.orm import relationship, sessionmaker, Session, mapped_column, M
 # Import required classes and functions from the ecs and threads modules
 from minference.ecs.entity import Entity, compare_entity_fields
 from minference.ecs.storage import create_association_table, BaseEntitySQL
-from minference.threads.sql_models import Base, EntityBase
+from minference.ecs.storage import Base, EntityBase
 
 # Create a separate metadata instance for these tests
 from sqlalchemy import MetaData

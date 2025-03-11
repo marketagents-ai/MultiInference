@@ -303,6 +303,70 @@ With these changes:
 
 This change significantly simplifies the developer experience while maintaining the core benefits of the entity component system.
 
+## Thread Message History Solution (March 11, 2025)
+
+We have implemented a principled solution to the message history versioning issue in SQL storage:
+
+### Problem Recap
+The fundamental issue stemmed from a mismatch between two models:
+1. **Entity Versioning Model**: Creates new entity IDs for changed entities while preserving history
+2. **SQL Foreign Key Model**: Updates foreign keys to always point to the latest version
+
+When a ChatThread was forked, all messages would have their `chat_thread_id` updated to point to the new thread ID, breaking the historical links to previous thread versions and causing incomplete message history.
+
+### Our Solution: The Message History Join Table
+
+We implemented a dedicated join table to maintain complete relationship history between threads and messages:
+
+```
+thread_message_history
+----------------------
+id (PK)
+thread_id (FK to chat_thread.ecs_id) - The thread lineage ID
+message_id (FK to chat_message.ecs_id) - The message ID
+thread_version (FK to chat_thread.ecs_id) - The specific thread version
+position (Int) - for ordering messages in a thread
+created_at (Timestamp) - when this relationship was created
+```
+
+This allows us to:
+1. Track which messages belong to which thread version
+2. Maintain proper message ordering for each version
+3. Keep a complete history of messages across all thread versions
+4. Support backward compatibility with existing code
+
+### Key Implementation Features:
+
+1. **No More Foreign Key Updates**: We no longer modify `chat_thread_id` on existing messages, preserving their original associations.
+
+2. **Versioned History**: Each thread version maintains its own list of messages in the history table.
+
+3. **Multi-Version Loading**: When loading a thread, we check both the direct relationship AND the history table, including entries from previous versions.
+
+4. **Automatic Fallback**: If the history table is empty or fails, we fall back to the old behavior for backward compatibility.
+
+5. **Auto-Population**: We automatically populate the history table from existing relationships for seamless migration.
+
+### Benefits of This Approach
+
+1. **Principled Solution**: Resolves the fundamental mismatch between entity versioning and SQL foreign keys
+2. **No Message Loss**: All messages are accessible from any thread version
+3. **Backward Compatible**: Works with existing code with no API changes
+4. **Performance**: Efficient querying with direct indexing on thread versions
+5. **Simple Implementation**: Only required changes to the SQL models, not the core entity code
+
+### Test Status
+
+The initial tests are passing. The join table is being created properly and can be queried. A comprehensive test suite has been created that validates the functionality:
+
+- Message history creation in the join table
+- Message preservation during thread forking
+- Cross-version message access
+- Entity tracer integration
+- Backward compatibility
+
+This approach resolves the message history issue in a clean, maintainable way that fits well with the existing architecture.
+
 ## Simplified SQLAlchemy Session Management (March 11, 2025)
 
 After encountering persistent session conflicts with our current approach, we're implementing a simpler and more robust solution:

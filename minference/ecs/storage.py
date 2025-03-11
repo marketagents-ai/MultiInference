@@ -104,14 +104,35 @@ class InMemoryEntityStorage(EntityStorage):
         return entity
 
     def get(self, entity_id: UUID, expected_type: Optional[Type[Entity]] = None) -> Optional[Entity]:
-        """Get an entity by ID with optional type checking."""
+        """
+        Get an entity by ID with optional type checking.
+        
+        Args:
+            entity_id: The UUID of the entity to retrieve
+            expected_type: Optional type to check against
+            
+        Returns:
+            A warm copy of the entity if found and type matches, otherwise None
+            
+        Note:
+            Type checking compares class names rather than using isinstance() directly,
+            to handle cases where the same class is imported from different modules.
+        """
         ent = self._registry.get(entity_id)
         if not ent:
+            self._logger.debug(f"Entity with ID {entity_id} not found in registry")
             return None
             
-        if expected_type and not isinstance(ent, expected_type):
-            self._logger.error(f"Type mismatch: got {type(ent).__name__}, expected {expected_type.__name__}")
-            return None
+        # For type checking, we use the class name rather than isinstance()
+        # This handles cases where the same class is imported from different modules
+        if expected_type:
+            actual_type = type(ent)
+            # Check class names match
+            if actual_type.__name__ != expected_type.__name__:
+                # Fall back to isinstance for subtypes
+                if not isinstance(ent, expected_type):
+                    self._logger.error(f"Type mismatch: got {actual_type.__name__}, expected {expected_type.__name__}")
+                    return None
             
         # Create a warm copy
         warm_copy = deepcopy(ent)
@@ -602,9 +623,15 @@ class SqlEntityStorage(EntityStorage):
                 return None
             
             # Check the type if requested
-            if expected_type and not isinstance(entity, expected_type):
-                self._logger.error(f"Type mismatch: {type(entity).__name__} is not a {expected_type.__name__}")
-                return None
+            if expected_type:
+                actual_type = type(entity)
+                # Use class name comparison instead of strict isinstance 
+                # to handle cases where the same class is imported from different modules
+                if actual_type.__name__ != expected_type.__name__:
+                    # Fall back to isinstance for subtypes
+                    if not isinstance(entity, expected_type):
+                        self._logger.error(f"Type mismatch: {actual_type.__name__} is not a {expected_type.__name__}")
+                        return None
             
             # Create a warm copy with a new live_id
             warm_copy = deepcopy(entity)

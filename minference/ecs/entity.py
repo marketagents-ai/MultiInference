@@ -133,12 +133,16 @@ def compare_entity_fields(
     logger.info(f"Comparing entities: {type(entity1).__name__}({entity1.ecs_id}) vs {type(entity2).__name__}({entity2.ecs_id})")
     
     if exclude_fields is None:
-        # Make sure we exclude all technical and implementation fields
-        exclude_fields = {
-            'id', 'ecs_id', 'created_at', 'parent_id', 'live_id', 
-            'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 
-            'sql_root', 'deps_graph', 'is_being_registered'
-        }
+        # Use the entity's custom ignore fields method if available
+        if hasattr(entity1, 'get_fields_to_ignore_for_comparison'):
+            exclude_fields = entity1.get_fields_to_ignore_for_comparison()
+        else:
+            # Default implementation fields to exclude
+            exclude_fields = {
+                'id', 'ecs_id', 'created_at', 'parent_id', 'live_id', 
+                'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 
+                'sql_root', 'deps_graph', 'is_being_registered'
+            }
     
     # Get field sets for both entities
     entity1_fields = set(entity1.model_fields.keys()) - exclude_fields
@@ -205,6 +209,27 @@ def compare_entity_fields(
                         "old": value2,
                         "new": value1
                     }
+        # Special handling for datetime objects to handle timezone differences
+        elif isinstance(value1, datetime) and isinstance(value2, datetime):
+            # Normalize timezones for comparison
+            v1_normalized = value1
+            v2_normalized = value2
+            
+            # Add UTC timezone if missing
+            if not v1_normalized.tzinfo:
+                v1_normalized = v1_normalized.replace(tzinfo=timezone.utc)
+            if not v2_normalized.tzinfo:
+                v2_normalized = v2_normalized.replace(tzinfo=timezone.utc)
+                
+            # Compare normalized values
+            if v1_normalized != v2_normalized:
+                has_diffs = True
+                logger.info(f"Field '{field}' has different datetime values (after normalization): {v1_normalized} vs {v2_normalized}")
+                field_diffs[field] = {
+                    "type": "modified",
+                    "old": v2_normalized,
+                    "new": v1_normalized
+                }
         # For all other types, compare normally
         elif value1 != value2:
             has_diffs = True
@@ -597,6 +622,30 @@ class Entity(BaseModel):
         # Return the forked entity
         return self
 
+    def get_fields_to_ignore_for_comparison(self) -> Set[str]:
+        """
+        Return a set of field names that should be ignored during entity comparison.
+        
+        This helps prevent unnecessary forking by excluding fields that are:
+        1. Implementation details (ecs_id, live_id, etc.)
+        2. Relational fields that aren't part of the entity's core state
+        3. Fields that have different representation but same semantic meaning
+        
+        Override this in subclasses to add domain-specific fields to ignore.
+        """
+        # Basic implementation fields that should always be ignored
+        return {
+            'id', 'ecs_id', 'created_at', 'parent_id', 'live_id', 
+            'old_ids', 'lineage_id', 'from_storage', 'force_parent_fork', 
+            'sql_root', 'deps_graph', 'is_being_registered',
+            
+            # Common relational fields that cause comparison issues
+            'chat_thread_id', 'parent_message_uuid', 'parent_message_id', 
+            'author_uuid', 'tool_uuid', 'tool_id', 'usage_id', 
+            'raw_output_id', 'json_object_id', 'forced_output_id',
+            'system_prompt_id', 'llm_config_id'
+        }
+    
     def has_modifications(self, other: "Entity") -> Tuple[bool, Dict["Entity", EntityDiff]]:
         """
         Check if this entity or any nested entities differ from their stored versions.

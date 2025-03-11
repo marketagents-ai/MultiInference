@@ -156,20 +156,28 @@ def entity_with_reference() -> RefEntity:
     """Create an entity with a reference to another entity."""
     target = SimpleEntity(name="Target", value=123)
     target.initialize_deps_graph()
+    registered_target = EntityRegistry.register(target)
     
-    ref = RefEntity(name="Reference", reference=target)
+    ref = RefEntity(name="Reference", reference=registered_target)
     ref.initialize_deps_graph()
-    return ref
+    registered_ref = EntityRegistry.register(ref)
+    return registered_ref
 
 @pytest.fixture
 def parent_with_children() -> ParentEntity:
     """Create a parent entity with child entities."""
     child1 = SimpleEntity(name="Child1", value=1)
-    child2 = SimpleEntity(name="Child2", value=2)
+    child1.initialize_deps_graph()
+    registered_child1 = EntityRegistry.register(child1)
     
-    parent = ParentEntity(name="Parent", children=[child1, child2])
+    child2 = SimpleEntity(name="Child2", value=2)
+    child2.initialize_deps_graph()
+    registered_child2 = EntityRegistry.register(child2)
+    
+    parent = ParentEntity(name="Parent", children=[registered_child1, registered_child2])
     parent.initialize_deps_graph()
-    return parent
+    registered_parent = EntityRegistry.register(parent)
+    return registered_parent
 
 @pytest.fixture
 def many_to_many_entities() -> tuple[ManyToManyLeft, ManyToManyRight]:
@@ -202,21 +210,39 @@ def hierarchical_entity() -> HierarchicalEntity:
     """Create a hierarchical entity structure."""
     # Create a three-level hierarchy
     root = HierarchicalEntity(name="Root")
+    
+    # Register the root first
+    root.initialize_deps_graph()
+    root = EntityRegistry.register(root)
+    
+    # Create middle layer
     mid1 = HierarchicalEntity(name="Mid1", parent=root)
+    mid1.initialize_deps_graph()
+    mid1 = EntityRegistry.register(mid1)
+    
     mid2 = HierarchicalEntity(name="Mid2", parent=root)
+    mid2.initialize_deps_graph()
+    mid2 = EntityRegistry.register(mid2)
+    
+    # Create leaf layer
     leaf1 = HierarchicalEntity(name="Leaf1", parent=mid1)
+    leaf1.initialize_deps_graph()
+    leaf1 = EntityRegistry.register(leaf1)
+    
     leaf2 = HierarchicalEntity(name="Leaf2", parent=mid2)
+    leaf2.initialize_deps_graph()
+    leaf2 = EntityRegistry.register(leaf2)
     
     # Update children lists
-    root.children = [mid1, mid2]
     mid1.children = [leaf1]
+    mid1 = EntityRegistry.register(mid1)
+    
     mid2.children = [leaf2]
+    mid2 = EntityRegistry.register(mid2)
     
-    # Initialize dependency graph
-    root.initialize_deps_graph()
-    
-    # Explicitly register
-    EntityRegistry.register(root)
+    # Set root's children and register final version
+    root.children = [mid1, mid2]
+    root = EntityRegistry.register(root)
     
     return root
 
@@ -234,7 +260,11 @@ def bidirectional_entities() -> BidirectionalParent:
     # Initialize dependency graph
     parent.initialize_deps_graph()
     
-    # Explicitly register
-    EntityRegistry.register(parent)
+    # We need to register the children first since they're in a circular reference
+    registered_child1 = EntityRegistry.register(child1)
+    registered_child2 = EntityRegistry.register(child2)
     
-    return parent
+    # Now register the parent - this will create proper links
+    registered_parent = EntityRegistry.register(parent)
+    
+    return registered_parent

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from minference.ecs.entity import Entity
 from minference.ecs.enregistry import EntityRegistry
-from conftest import ManyToManyLeft, ManyToManyRight
+from tests.ecs_tests.conftest import ManyToManyLeft, ManyToManyRight
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
