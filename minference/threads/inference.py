@@ -30,7 +30,7 @@ from minference.clients.requests import (
     create_litellm_completion_config,
     create_openrouter_completion_config
 )
-from minference.ecs.enregistry import EntityRegistry
+from minference.ecs.entity import EntityRegistry
 
 def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
     """Create a hashmap of chat threads by their IDs."""

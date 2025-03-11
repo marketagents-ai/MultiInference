@@ -66,9 +66,7 @@ from openai.types.chat.chat_completion import Choice, ChatCompletion
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion import Choice
 
-from minference.ecs.entity import Entity
-from minference.ecs.enregistry import EntityRegistry
-from minference.ecs.enregistry import entity_tracer
+from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
 
 T_Self = TypeVar('T_Self', bound='CallableTool')
 

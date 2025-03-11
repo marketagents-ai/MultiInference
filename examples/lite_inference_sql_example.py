@@ -25,7 +25,7 @@ from minference.threads.sql_models import (
 from minference.ecs.caregistry import CallableRegistry
 from minference.ecs.entity import Entity
 from minference.ecs.storage import SqlEntityStorage, EntityBase, BaseEntitySQL
-from minference.ecs.enregistry import EntityRegistry
+from minference.ecs.entity import EntityRegistry
 from minference.clients.utils import parse_json_string, msg_dict_to_oai, msg_dict_to_anthropic
 
 
