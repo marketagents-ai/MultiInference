@@ -38,8 +38,8 @@ def sql_engine():
         echo=True,  # Turn on SQL logging to see what's happening
     )
     
-    # Import the Base from entity.py and sql_models.py to create all tables
-    from minference.ecs.entity import BaseEntitySQL, Base as EntityBase_Base
+    # Import the Base from storage.py and sql_models.py to create all tables
+    from minference.ecs.storage import BaseEntitySQL, Base as EntityBase_Base
     from minference.threads.sql_models import Base as ThreadBase
     
     # Create all tables explicitly to ensure they exist
@@ -109,7 +109,7 @@ def test_uuid_serialization_verification():
 
 def test_entity_tracer_with_sql_storage(setup_sql_storage):
     """Test that the entity_tracer decorator works with SQL storage."""
-    from minference.ecs.entity import entity_tracer
+    from minference.ecs.enregistry import entity_tracer
     
     # Define a calculator function
     def simple_add(x: float, y: float) -> float:
@@ -171,7 +171,7 @@ def test_entity_tracer_with_sql_storage(setup_sql_storage):
 @pytest.mark.asyncio
 async def test_async_entity_tracer(setup_sql_storage, sql_session_factory):
     """Test that the entity_tracer decorator works with async functions."""
-    from minference.ecs.entity import entity_tracer
+    from minference.ecs.enregistry import entity_tracer
     
     # Define an async function to use as a tool
     async def async_calculator(x: float, y: float) -> float:

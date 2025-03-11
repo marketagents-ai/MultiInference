@@ -170,12 +170,13 @@ class ChatThreadSQL(EntityBase):
             # First try to use the versioned history table
             history_message_ids = []
             try:
-                # Query message history from the history table for all thread versions
+                # Query message history from the history table for ONLY this thread version
+                # This maintains proper thread isolation
                 history_query = select(
                     thread_message_history.c.message_id,
                     thread_message_history.c.position
                 ).where(
-                    thread_message_history.c.thread_version.in_(all_thread_versions)
+                    thread_message_history.c.thread_version == thread_sql.ecs_id
                 ).order_by(
                     thread_message_history.c.position
                 )
@@ -228,9 +229,10 @@ class ChatThreadSQL(EntityBase):
             if not history_message_ids:
                 print(f"No messages found in history table, falling back to direct relationships")
                 
-                # Query ALL messages that could belong to this thread (current or previous versions)
+                # Query ONLY messages that belong to this specific thread version 
+                # This maintains proper thread isolation - each thread has only its own messages
                 message_query = session.query(ChatMessageSQL).filter(
-                    ChatMessageSQL.chat_thread_id.in_(all_thread_versions)  # type: ignore
+                    ChatMessageSQL.chat_thread_id == thread_sql.ecs_id  # type: ignore
                 ).order_by(ChatMessageSQL.created_at)  # Sort by creation time to ensure consistent ordering
                 
                 all_messages = message_query.all()

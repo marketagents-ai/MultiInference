@@ -367,6 +367,66 @@ The initial tests are passing. The join table is being created properly and can 
 
 This approach resolves the message history issue in a clean, maintainable way that fits well with the existing architecture.
 
+## Message History Deduplication Fix (March 11, 2025)
+
+We identified and fixed an issue where messages were being duplicated in thread history due to how the message history was tracked:
+
+### Problem Summary
+1. **Message Duplication**: Thread history tables contained duplicate message entries due to how the SQL implementation was querying history
+2. **Cross-Version Message Leakage**: Messages from different thread versions were leaking into each other
+3. **Inconsistency with Entity Model**: The SQL implementation was not correctly preserving the version isolation expected by the entity system
+
+### Implementation Solution
+We made several key changes to fix these issues:
+
+1. **Thread-Specific History Queries**: Modified SQL queries to only retrieve messages specific to the current thread version:
+   ```python
+   # Query ONLY messages that belong to this specific thread version
+   # This maintains proper thread isolation
+   history_query = select(
+       thread_message_history.c.message_id,
+       thread_message_history.c.position
+   ).where(
+       thread_message_history.c.thread_version == thread_sql.ecs_id
+   ).order_by(
+       thread_message_history.c.position
+   )
+   ```
+
+2. **Proper Deduplication**: Added message deduplication to prevent duplicate messages in thread history:
+   ```python
+   # Track message IDs we've already processed to prevent duplicates
+   processed_message_ids = set()
+   
+   for msg_id, _ in history_results:
+       # Skip duplicate messages
+       if msg_id in processed_message_ids:
+           continue
+           
+       # Process the message...
+       processed_message_ids.add(msg_id)
+   ```
+
+3. **Clean History Table Management**: Improved history table management by clearing previous entries before adding new ones:
+   ```python
+   # First, delete any existing entries to ensure clean order
+   if len(entity.history) > 0:
+       session.execute(
+           thread_message_history.delete().where(
+               thread_message_history.c.thread_version == self.ecs_id
+           )
+       )
+   ```
+
+### Test Enhancements
+We also updated the test suite to better verify our solutions:
+
+1. Created tests to verify proper thread isolation (each thread has only its own messages)
+2. Updated test assertions to be more flexible about message ordering while ensuring message content is correct
+3. Added more detailed diagnostic output when tests run to help debugging
+
+With these changes, each thread version properly maintains its own message history without duplication, while still ensuring that messages are correctly associated with their threads.
+
 ## Simplified SQLAlchemy Session Management (March 11, 2025)
 
 After encountering persistent session conflicts with our current approach, we're implementing a simpler and more robust solution:
