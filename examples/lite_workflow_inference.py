@@ -4,7 +4,7 @@ from minference.threads.inference import InferenceOrchestrator, RequestLimits
 from minference.threads.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool
 from typing import List
 from pydantic import BaseModel
-from minference.ecs.entity import EntityRegistry
+from minference.ecs.enregistry import EntityRegistry
 from minference.ecs.caregistry import CallableRegistry
 import statistics
 from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
