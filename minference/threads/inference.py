@@ -105,7 +105,7 @@ Traceback: {e.__traceback__}
     
     return llm_outputs
 
-# @entity_tracer
+@entity_tracer
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'

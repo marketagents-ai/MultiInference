@@ -80,6 +80,18 @@ thread_message_history = Table(
     UniqueConstraint("thread_version", "message_id", name="uix_thread_version_message")
 )
 
+# Add new versioning table
+message_parent_history = Table(
+    "message_parent_history",
+    Base.metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("message_id", Uuid, ForeignKey("chat_message.ecs_id"), index=True),
+    Column("parent_id", Uuid, ForeignKey("chat_message.ecs_id"), index=True),
+    Column("message_version", Uuid, ForeignKey("chat_message.ecs_id"), index=True),
+    Column("created_at", DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)),
+    UniqueConstraint("message_version", "parent_id", name="uix_message_version_parent")
+)
+
 # BaseEntitySQL is now imported from minference.ecs.entity
 
 class ChatThreadSQL(EntityBase):
@@ -646,16 +658,22 @@ class ChatMessageSQL(EntityBase):
         
         # Handle parent_message relationship
         if entity.parent_message_uuid:
-            if entity.parent_message_uuid in orm_objects:
-                self.parent_message = orm_objects[entity.parent_message_uuid]
-            else:
-                # Try to find in database only if we don't already have the relationship
-                if not self.parent_message_id or self.parent_message_id != entity.parent_message_uuid:
-                    parent_message = session.query(ChatMessageSQL).filter(
-                        ChatMessageSQL.ecs_id == entity.parent_message_uuid
-                    ).first()
-                    if parent_message:
-                        self.parent_message = parent_message
+            # Clear existing version entry
+            session.execute(
+                message_parent_history.delete().where(
+                    message_parent_history.c.message_version == self.ecs_id
+                )
+            )
+            
+            # Add new version entry
+            session.execute(
+                message_parent_history.insert().values(
+                    message_id=self.ecs_id,
+                    parent_id=entity.parent_message_uuid,
+                    message_version=self.ecs_id,
+                    created_at=datetime.now(timezone.utc)
+                )
+            )
         
         # Handle tool relationship by UUID
         if entity.tool_uuid:

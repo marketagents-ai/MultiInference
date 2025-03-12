@@ -1061,7 +1061,6 @@ class RawOutput(Entity):
                 except json.JSONDecodeError:
                     return None
             return None
-
     def _parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
         """Parse OpenAI or DeepSeek completion format."""
         choice = chat_completion.choices[0]

@@ -13,11 +13,15 @@ def _collect_entities(args: tuple, kwargs: dict) -> Dict[int, Entity]:
     logger.debug(f"Collecting entities from {len(args)} args and {len(kwargs)} kwargs")
     
     entities = {}
+    scanned_ids = set()  # Track entity IDs we've seen to avoid cycles
     
     def scan(obj: Any, path: str = "") -> None:
         if isinstance(obj, Entity):
-            entities[id(obj)] = obj
-            logger.debug(f"Found entity {type(obj).__name__}({obj.ecs_id}) at path {path}")
+            # Only process each entity once by its UUID
+            if obj.ecs_id not in scanned_ids:
+                scanned_ids.add(obj.ecs_id)
+                entities[id(obj)] = obj
+                logger.debug(f"Found entity {type(obj).__name__}({obj.ecs_id}) at path {path}")
         elif isinstance(obj, (list, tuple, set)):
             logger.debug(f"Scanning collection at path {path} with {len(obj)} items")
             for i, item in enumerate(obj):
@@ -125,9 +129,10 @@ def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
     async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
         logger.info(f"Entering async wrapper for {func.__name__}")
         
-        # Collect all entities from inputs
-        entities = _collect_entities(args, kwargs)
-        logger.info(f"Collected {len(entities)} entities from arguments")
+        # Collect input entities and their IDs
+        input_entities = _collect_entities(args, kwargs)
+        input_entity_uuids = {e.ecs_id for e in input_entities.values()}
+        logger.info(f"Collected {len(input_entities)} input entities")
         
         # Get storage type to adjust behavior
         storage_info = EntityRegistry.get_registry_status()
@@ -136,78 +141,89 @@ def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
         
         # Check for modifications before call
         fork_count = 0
-        for entity_id, entity in entities.items():
-            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) before function call")
+        for entity_id, entity in input_entities.items():
+            logger.debug(f"Checking input entity {type(entity).__name__}({entity.ecs_id}) before function call")
             cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
             if cold_snapshot:
                 # Special handling based on storage type
                 if using_sql_storage:
                     needs_fork, modified = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
                         entity.fork()
                         fork_count += 1
                 else:
                     # Simpler check for in-memory mode for better tracing
                     needs_fork, _ = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
                         entity.fork()
                         fork_count += 1
             else:
                 logger.debug(f"No cold snapshot found for entity {entity.ecs_id}")
         
-        logger.info(f"Forked {fork_count} entities before calling {func.__name__}")
+        logger.info(f"Forked {fork_count} input entities before calling {func.__name__}")
 
         # Call the function
         logger.debug(f"Calling async function {func.__name__}")
         result = await func(*args, **kwargs)
         logger.debug(f"Function {func.__name__} returned: {type(result)}")
 
-        # Check for modifications after call - same logic as before
+        # Collect output entities, excluding those that were inputs
+        output_entities = _collect_entities((result,), {})
+        new_entities = {
+            id_: entity 
+            for id_, entity in output_entities.items()
+            if entity.ecs_id not in input_entity_uuids
+        }
+        logger.info(f"Found {len(new_entities)} new entities in output")
+        
+        # Register new entities first
+        for entity in new_entities.values():
+            if not EntityRegistry.has_entity(entity.ecs_id):
+                logger.info(f"Registering new output entity: {type(entity).__name__}({entity.ecs_id})")
+                EntityRegistry.register(entity)
+        
+        # Now check modifications on input entities
         after_fork_count = 0
-        for entity_id, entity in entities.items():
-            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) after function call")
+        for entity_id, entity in input_entities.items():
+            logger.debug(f"Checking input entity {type(entity).__name__}({entity.ecs_id}) after function call")
             cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
             if cold_snapshot:
                 if using_sql_storage:
                     needs_fork, modified = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
                         entity.fork()
                         after_fork_count += 1
                 else:
                     needs_fork, _ = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
                         entity.fork()
                         after_fork_count += 1
-            else:
-                logger.debug(f"No cold snapshot found for entity {entity.ecs_id} after call")
-            
-        logger.info(f"Forked {after_fork_count} entities after calling {func.__name__}")
         
-        # If result is an entity, handle it appropriately
+        logger.info(f"Forked {after_fork_count} input entities after calling {func.__name__}")
+        
+        # Handle the result
         if isinstance(result, Entity):
             # If it was an input entity that was modified, return the forked version
-            if id(result) in entities:
-                logger.info(f"Result is an entity that was in arguments, returning most recent version")
-                return entities[id(result)]
-            # If it's a newly created entity, register it automatically
-            elif not EntityRegistry.has_entity(result.ecs_id):
-                logger.info(f"Result is a newly created entity, registering it automatically")
-                return EntityRegistry.register(result)
-
-        logger.debug(f"Exiting async wrapper for {func.__name__}")
+            if id(result) in input_entities:
+                logger.info(f"Result is an input entity that was modified, returning most recent version")
+                return input_entities[id(result)]
+            # If it's a new entity, it's already been registered above
+            return result
+            
         return result
     
     @wraps(func)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         logger.info(f"Entering sync wrapper for {func.__name__}")
         
-        # Collect all entities from inputs
-        entities = _collect_entities(args, kwargs)
-        logger.info(f"Collected {len(entities)} entities from arguments")
+        # Collect input entities and their IDs
+        input_entities = _collect_entities(args, kwargs)
+        input_entity_uuids = {e.ecs_id for e in input_entities.values()}
+        logger.info(f"Collected {len(input_entities)} input entities")
         
         # Get storage type to adjust behavior
         storage_info = EntityRegistry.get_registry_status()
@@ -216,69 +232,79 @@ def entity_tracer(func: Callable[..., Any]) -> Callable[..., Any]:
         
         # Check for modifications before call
         fork_count = 0
-        for entity_id, entity in entities.items():
-            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) before function call")
+        for entity_id, entity in input_entities.items():
+            logger.debug(f"Checking input entity {type(entity).__name__}({entity.ecs_id}) before function call")
             cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
             if cold_snapshot:
                 # Special handling based on storage type
                 if using_sql_storage:
                     needs_fork, modified = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call")
                         entity.fork()
                         fork_count += 1
                 else:
                     # Simpler check for in-memory mode for better tracing
                     needs_fork, _ = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking before call (in-memory mode)")
                         entity.fork()
                         fork_count += 1
             else:
                 logger.debug(f"No cold snapshot found for entity {entity.ecs_id}")
         
-        logger.info(f"Forked {fork_count} entities before calling {func.__name__}")
+        logger.info(f"Forked {fork_count} input entities before calling {func.__name__}")
 
         # Call the function
         logger.debug(f"Calling sync function {func.__name__}")
         result = func(*args, **kwargs)
         logger.debug(f"Function {func.__name__} returned: {type(result)}")
 
-        # Check for modifications after call - same logic as before
+        # Collect output entities, excluding those that were inputs
+        output_entities = _collect_entities((result,), {})
+        new_entities = {
+            id_: entity 
+            for id_, entity in output_entities.items()
+            if entity.ecs_id not in input_entity_uuids
+        }
+        logger.info(f"Found {len(new_entities)} new entities in output")
+        
+        # Register new entities first
+        for entity in new_entities.values():
+            if not EntityRegistry.has_entity(entity.ecs_id):
+                logger.info(f"Registering new output entity: {type(entity).__name__}({entity.ecs_id})")
+                EntityRegistry.register(entity)
+        
+        # Now check modifications on input entities
         after_fork_count = 0
-        for entity_id, entity in entities.items():
-            logger.debug(f"Checking entity {type(entity).__name__}({entity.ecs_id}) after function call")
+        for entity_id, entity in input_entities.items():
+            logger.debug(f"Checking input entity {type(entity).__name__}({entity.ecs_id}) after function call")
             cold_snapshot = EntityRegistry.get_cold_snapshot(entity.ecs_id)
             if cold_snapshot:
                 if using_sql_storage:
                     needs_fork, modified = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call")
                         entity.fork()
                         after_fork_count += 1
                 else:
                     needs_fork, _ = entity.has_modifications(cold_snapshot)
                     if needs_fork:
-                        logger.info(f"Entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
+                        logger.info(f"Input entity {type(entity).__name__}({entity.ecs_id}) needs fork - forking after call (in-memory mode)")
                         entity.fork()
                         after_fork_count += 1
-            else:
-                logger.debug(f"No cold snapshot found for entity {entity.ecs_id} after call")
-            
-        logger.info(f"Forked {after_fork_count} entities after calling {func.__name__}")
         
-        # If result is an entity, handle it appropriately
+        logger.info(f"Forked {after_fork_count} input entities after calling {func.__name__}")
+        
+        # Handle the result
         if isinstance(result, Entity):
             # If it was an input entity that was modified, return the forked version
-            if id(result) in entities:
-                logger.info(f"Result is an entity that was in arguments, returning most recent version")
-                return entities[id(result)]
-            # If it's a newly created entity, register it automatically
-            elif not EntityRegistry.has_entity(result.ecs_id):
-                logger.info(f"Result is a newly created entity, registering it automatically")
-                return EntityRegistry.register(result)
-
-        logger.debug(f"Exiting sync wrapper for {func.__name__}")
+            if id(result) in input_entities:
+                logger.info(f"Result is an input entity that was modified, returning most recent version")
+                return input_entities[id(result)]
+            # If it's a new entity, it's already been registered above
+            return result
+            
         return result
     
     # Use the appropriate wrapper based on whether the function is async
