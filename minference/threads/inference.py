@@ -31,11 +31,12 @@ from minference.clients.requests import (
     create_openrouter_completion_config
 )
 from minference.ecs.entity import EntityRegistry
+from minference.ecs.tracer import entity_tracer
 
 def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, ChatThread]:
     """Create a hashmap of chat threads by their IDs."""
     return {p.ecs_id: p for p in chat_threads if p.ecs_id is not None}
-
+# 
 # @entity_tracer
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
@@ -104,6 +105,7 @@ Traceback: {e.__traceback__}
     
     return llm_outputs
 
+# @entity_tracer
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'

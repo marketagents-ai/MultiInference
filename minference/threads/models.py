@@ -1425,7 +1425,6 @@ class ChatThread(Entity):
             return self.forced_output
         return None
     
-    # @entity_uuid_expander("self")
     @entity_tracer
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""

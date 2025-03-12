@@ -425,73 +425,45 @@ class ChatThreadSQL(EntityBase):
             
         # Handle history relationship (messages)
         if entity.history:
-            # Get current message IDs in relationship
-            current_message_ids = {msg.ecs_id for msg in self.messages} if self.messages else set()
-            
-            # Only update if there's a difference
             new_message_ids = {msg.ecs_id for msg in entity.history}
+            current_message_ids = {msg.ecs_id for msg in self.messages} if self.messages else set()
+
             if current_message_ids != new_message_ids:
                 messages = []
                 for message in entity.history:
-                    # Get or create the ORM object
+                    # Don't modify the original message
                     if message.ecs_id in orm_objects:
                         message_orm = orm_objects[message.ecs_id]
-                        messages.append(message_orm)
                     else:
-                        # Try to find in database
                         message_orm = session.query(ChatMessageSQL).filter(
                             ChatMessageSQL.ecs_id == message.ecs_id
                         ).first()
-                        if message_orm:
-                            messages.append(message_orm)
-                        else:
-                            # Message not found - create a new ORM object with the current thread
-                            # Using model_copy() instead of deprecated copy()
-                            message_copy = message.model_copy(update={"chat_thread_id": self.ecs_id})
-                            message_orm = ChatMessageSQL.from_entity(message_copy)
+                        if not message_orm:
+                            # Create new message without modifying chat_thread_id
+                            message_orm = ChatMessageSQL.from_entity(message)
                             session.add(message_orm)
-                            messages.append(message_orm)
-                
+                    messages.append(message_orm)
+
+                # Update only the history table
                 if messages:
-                    # Set the direct relationship for active messages
-                    self.messages = messages
-                    
-                    print(f"Added {len(messages)} messages to ChatThreadSQL direct relationship {self.ecs_id}")
-                    
-                    # Update the message history table for versioned access
                     try:
-                        # Check if entries already exist to avoid duplicates
-                        existing_query = select(thread_message_history.c.message_id).where(
-                            thread_message_history.c.thread_version == self.ecs_id
+                        session.execute(
+                            thread_message_history.delete().where(
+                                thread_message_history.c.thread_version == self.ecs_id
+                            )
                         )
-                        existing_message_ids = {row[0] for row in session.execute(existing_query).all()}
                         
-                        # First, delete any existing entries to ensure clean order
-                        if len(entity.history) > 0:
-                            try:
-                                session.execute(
-                                    thread_message_history.delete().where(
-                                        thread_message_history.c.thread_version == self.ecs_id
-                                    )
-                                )
-                                print(f"Cleared previous history table entries for thread {self.ecs_id}")
-                            except Exception as e:
-                                print(f"Error clearing history table: {e}")
-                        
-                        # Insert entries for each message with fresh positions
-                        for position, message in enumerate(entity.history):
-                            print(f"Adding message to history table: position={position}, content={message.content[:30]}...")
+                        # Add history entries without modifying messages
+                        for position, message in enumerate(messages):
                             session.execute(
                                 insert(thread_message_history).values(
-                                    thread_id=self.lineage_id,      # The lineage ID tracks the thread family
-                                    thread_version=self.ecs_id,     # This specific version
+                                    thread_id=self.lineage_id,
+                                    thread_version=self.ecs_id,
                                     message_id=message.ecs_id,
                                     position=position,
                                     created_at=datetime.now(timezone.utc)
                                 )
                             )
-                        
-                        print(f"Updated message history table for thread {self.ecs_id} with {len(entity.history)} messages")
                     except Exception as e:
                         print(f"Error updating message history table: {e}")
             else:
