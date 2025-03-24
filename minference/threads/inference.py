@@ -10,6 +10,7 @@ from pydantic import Field
 from dotenv import load_dotenv
 import time
 from uuid import UUID, uuid4
+import aiofiles
 
 # Internal imports - complete set
 from minference.threads.models import (
@@ -55,7 +56,6 @@ def create_chat_thread_hashmap(chat_threads: List[ChatThread]) -> Dict[UUID, Cha
     """Create a hashmap of chat threads by their IDs."""
     return {p.id: p for p in chat_threads if p.id is not None}
 
-@entity_tracer
 async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_outputs: List[ProcessedOutput]) -> List[ProcessedOutput]:
     """Process outputs and execute tools in parallel."""
     # Track thread ID mappings (original -> latest)
@@ -70,8 +70,9 @@ async def process_outputs_and_execute_tools(chat_threads: List[ChatThread], llm_
     
     for output in llm_outputs:
         if output.chat_thread_live_id:
+            
             try:
-                # Get the latest version from registry
+                # Get the latest version from the thread mapping
                 chat_thread = thread_id_mappings.get(output.chat_thread_live_id,None)
                 if not chat_thread:
                     EntityRegistry._logger.error(f"ChatThread({output.chat_thread_id}) not found in temporary thread_id_mappings")
@@ -123,7 +124,6 @@ Traceback: {e.__traceback__}
     
     return llm_outputs
 
-@entity_tracer
 async def run_parallel_ai_completion(
     chat_threads: List[ChatThread],
     orchestrator: 'InferenceOrchestrator'
@@ -173,27 +173,43 @@ async def run_parallel_ai_completion(
     
     return processed_outputs
 
-def parse_results_file(filepath: str, client: LLMClient) -> List[ProcessedOutput]:
-    """Parse results file and convert to ProcessedOutput objects."""
+async def parse_results_file(filepath: str, client: LLMClient) -> List[ProcessedOutput]:
+    """Parse results file and convert to ProcessedOutput objects asynchronously."""
     results = []
+    pending_tasks = []
     EntityRegistry._logger.info(f"Parsing results from {filepath}")
-    with open(filepath, 'r') as f:
-        for line in f:
-            try:
-                result = json.loads(line)
-                processed_output = convert_result_to_llm_output(result, client)
-                results.append(processed_output)
-            except json.JSONDecodeError:
-                EntityRegistry._logger.error(f"Error decoding JSON: {line}")
-            except Exception as e:
-                EntityRegistry._logger.error(f"Error processing result: {e}")
+    
+    async def process_line(line: str) -> Optional[ProcessedOutput]:
+        """Process a single line asynchronously."""
+        try:
+            result = json.loads(line)
+            processed_output = await convert_result_to_llm_output(result, client)
+            return processed_output
+        except json.JSONDecodeError:
+            EntityRegistry._logger.error(f"Error decoding JSON: {line}")
+        except Exception as e:
+            EntityRegistry._logger.error(f"Error processing result: {e}")
+        return None
+
+    async with aiofiles.open(filepath, 'r') as f:
+        async for line in f:
+            # Create task for each line
+            task = asyncio.create_task(process_line(line))
+            pending_tasks.append(task)
+    
+    # Wait for all tasks to complete
+    completed_tasks = await asyncio.gather(*pending_tasks)
+    
+    # Filter out None results and add to results list
+    results = [result for result in completed_tasks if result is not None]
+    
     EntityRegistry._logger.info(f"Processed {len(results)} results from {filepath}")
     return results
 
-def convert_result_to_llm_output(result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
+async def convert_result_to_llm_output(result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
     """Convert raw result directly to ProcessedOutput."""
     metadata, request_data, response_data = result
-    EntityRegistry._logger.info(f"Converting result for chat_thread_id: {metadata['chat_thread_id']}")
+    # EntityRegistry._logger.info(f"Converting result for chat_thread_id: {metadata['chat_thread_id']}")
 
     raw_output = RawOutput(
         raw_result=response_data,
@@ -307,7 +323,7 @@ class InferenceOrchestrator:
         if config:
             try:
                 await process_api_requests_from_file(config)
-                return self._parse_results_file(results_file, client=LLMClient.openai)
+                return await parse_results_file(results_file, client=LLMClient.openai)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)
@@ -333,7 +349,7 @@ class InferenceOrchestrator:
         if config:
             try:
                 await process_api_requests_from_file(config)
-                return self._parse_results_file(results_file, client=LLMClient.anthropic)
+                return await parse_results_file(results_file, client=LLMClient.anthropic)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)
@@ -360,7 +376,7 @@ class InferenceOrchestrator:
         if config:
             try:
                 await process_api_requests_from_file(config)
-                return self._parse_results_file(results_file, client=LLMClient.vllm)
+                return await parse_results_file(results_file, client=LLMClient.vllm)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)
@@ -387,7 +403,7 @@ class InferenceOrchestrator:
         if config:
             try:
                 await process_api_requests_from_file(config)
-                return self._parse_results_file(results_file, client=LLMClient.litellm)
+                return await parse_results_file(results_file, client=LLMClient.litellm)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)
@@ -413,19 +429,11 @@ class InferenceOrchestrator:
         if config:
             try:
                 await process_api_requests_from_file(config)
-                return self._parse_results_file(results_file, client=LLMClient.openrouter)
+                return await parse_results_file(results_file, client=LLMClient.openrouter)
             finally:
                 if not self.local_cache:
                     self._delete_files(requests_file, results_file)
         return []
-
-    def _parse_results_file(self, filepath: str, client: LLMClient) -> List[ProcessedOutput]:
-        """Parse results file and convert to ProcessedOutput objects."""
-        return parse_results_file(filepath, client)
-
-    def _convert_result_to_llm_output(self, result: List[Dict[str, Any]], client: LLMClient) -> ProcessedOutput:
-        """Convert raw result directly to ProcessedOutput."""
-        return convert_result_to_llm_output(result, client)
 
     def _delete_files(self, *files):
         """Delete temporary files if not caching locally."""

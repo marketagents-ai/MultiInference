@@ -64,10 +64,14 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice, ChatCompletion
 from openai.types.completion_usage import CompletionUsage
 from openai.types.chat.chat_completion import Choice
+from logging import getLogger, WARNING, INFO
 
 from minference.ecs.entity import Entity, EntityRegistry, entity_tracer
 
 T_Self = TypeVar('T_Self', bound='CallableTool')
+logger = getLogger("minference.threads.models")
+logger.setLevel(WARNING)
+
 
 class CallableTool(Entity):
     """
@@ -424,19 +428,28 @@ class StructuredTool(Entity):
         description="Whether to enforce strict schema validation"
     )
 
+    post_validate_schema: bool = Field(
+        default=True,
+        description="Whether to post-validate the schema"
+    )
+
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute structured output validation."""
-        EntityRegistry._logger.info(f"StructuredTool({self.id}): Validating input for '{self.name}'")
         
-        try:
-            # Validate input against schema
-            validate(instance=input_data, schema=self.json_schema)
-            EntityRegistry._logger.info(f"StructuredTool({self.id}): Validation successful")
-            return input_data
+        if self.post_validate_schema:
+            logger.info(f"StructuredTool({self.id}): Validating input for '{self.name}'")
+            try:
+                # Validate input against schema
+                validate(instance=input_data, schema=self.json_schema)
+                logger.info(f"StructuredTool({self.id}): Validation successful")
+                return input_data
             
-        except Exception as e:
-            EntityRegistry._logger.error(f"StructuredTool({self.id}): Validation failed - {str(e)}")
-            return {"error": str(e)}
+            except Exception as e:
+                    logger.error(f"StructuredTool({self.id}): Validation failed - {str(e)}")
+                    return {"error": str(e)}
+        else:
+            logger.info(f"StructuredTool({self.id}): Validation skipped for '{self.name}'")
+            return input_data
 
     async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -552,21 +565,21 @@ class StructuredTool(Entity):
     @model_validator(mode='before')
     def validate_history(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-validate to ensure history contains proper ChatMessage objects"""
-        EntityRegistry._logger.debug(f"Starting history validation for ChatThread")
+        logger.debug(f"Starting history validation for ChatThread")
         
         if 'history' in values and isinstance(values['history'], list):
-            EntityRegistry._logger.info(f"Processing history list with {len(values['history'])} messages")
+            logger.info(f"Processing history list with {len(values['history'])} messages")
             history = []
             for idx, msg in enumerate(values['history']):
-                EntityRegistry._logger.debug(f"Processing message {idx}: {type(msg)}")
+                logger.debug(f"Processing message {idx}: {type(msg)}")
                 if isinstance(msg, dict):
-                    EntityRegistry._logger.debug(f"Converting dict to ChatMessage: {msg}")
+                    logger.debug(f"Converting dict to ChatMessage: {msg}")
                     msg = ChatMessage.model_validate(msg)
                 history.append(msg)
-            EntityRegistry._logger.info(f"History validation complete - processed {len(history)} messages")
+            logger.info(f"History validation complete - processed {len(history)} messages")
             values['history'] = history
         else:
-            EntityRegistry._logger.debug("No history found or history is not a list")
+            logger.debug("No history found or history is not a list")
         return values
 
 class LLMClient(str, Enum):
@@ -1018,60 +1031,175 @@ class RawOutput(Entity):
     def _parse_json_string(self, content: str) -> Optional[Dict[str, Any]]:
         """Parse JSON string safely."""
         try:
-            # Try direct JSON parsing first
-            return json.loads(content)
-        except json.JSONDecodeError:
-            # Fall back to more lenient parsing if needed
+            cleaned_content = content
             import re
-            json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+            
+            # Try stripping tool_call tags first
+            tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+            if '<tool_call>' in cleaned_content:
+                match = re.search(tool_call_pattern, cleaned_content, re.DOTALL)
+                if match:
+                    cleaned_content = match.group(1).strip()
+            
+            # Try stripping tool_request tags
+            tool_request_pattern = r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]'
+            if '[TOOL_REQUEST]' in cleaned_content:
+                match = re.search(tool_request_pattern, cleaned_content, re.DOTALL)
+                if match:
+                    cleaned_content = match.group(1).strip()
+
+            # Try direct JSON parsing of cleaned content
+            try:
+                return json.loads(cleaned_content)
+            except json.JSONDecodeError:
+                pass
+
+            # Try original content if cleaned parsing failed
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                pass
+
+            # Try code block format
+            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
             if json_match:
                 try:
                     return json.loads(json_match.group(1))
                 except json.JSONDecodeError:
-                    return None
+                    pass
+
+            # Try Python-style boolean conversion
+            try:
+                # Replace Python-style booleans with JSON-style booleans
+                cleaned_content = re.sub(r'\bTrue\b', 'true', cleaned_content)
+                cleaned_content = re.sub(r'\bFalse\b', 'false', cleaned_content)
+                cleaned_content = re.sub(r'\bNone\b', 'null', cleaned_content)
+                return json.loads(cleaned_content)
+            except json.JSONDecodeError:
+                pass
+
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing JSON string: {str(e)}")
             return None
 
     def _parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
         """Parse OpenAI or DeepSeek completion format."""
+        logger.info("Starting _parse_oai_completion")
         choice = chat_completion.choices[0]
         message = choice.message
         
-        # Handle DeepSeek's reasoning field if present
         if isinstance(chat_completion, DeepSeekChatCompletion) and isinstance(message, DeepSeekChatCompletionMessage):
             content = f"<think>{message.reasoning}</think>\n{message.content}" if message.reasoning else message.content
         else:
             content = message.content
+        
+        if content is not None:
+            logger.info(f"Initial content: {content[:200]}...")
+        else:
+            logger.info("Initial content is None")
 
         json_object = None
         usage = None
 
-        # Handle tool calls
+        # Handle explicit tool calls (OpenAI format)
         if message.tool_calls:
+            logger.info("Found explicit tool_calls in message")
             tool_call = message.tool_calls[0]
             name = tool_call.function.name
             tool_call_id = tool_call.id
-            try:
-                object_dict = json.loads(tool_call.function.arguments)
-                json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
-            except json.JSONDecodeError:
-                json_object = GeneratedJsonObject(name=name, object={"raw": tool_call.function.arguments}, tool_call_id=tool_call_id)
-        
-        # Handle content parsing
+            
+            # Check if arguments contain a nested tool_call
+            arguments = tool_call.function.arguments
+            logger.info(f"Raw tool call arguments: {arguments[:200]}...")
+            
+            if '<tool_call>' in arguments:
+                logger.info("Found nested tool_call in arguments, attempting to extract")
+                import re
+                tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+                match = re.search(tool_call_pattern, arguments, re.DOTALL)
+                if match:
+                    try:
+                        tool_data = json.loads(match.group(1).strip())
+                        logger.info(f"Successfully parsed nested tool data: {tool_data}")
+                        json_object = GeneratedJsonObject(
+                            name=tool_data.get("name", name),
+                            object=tool_data.get("arguments", {}),
+                            tool_call_id=tool_call_id
+                        )
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse nested tool call JSON: {e}")
+            
+            # If nested parsing failed, try direct parsing
+            if json_object is None:
+                try:
+                    object_dict = json.loads(arguments)
+                    json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
+                    logger.info(f"Successfully parsed direct tool call for tool: {name}")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse tool call arguments: {e}")
+                    json_object = GeneratedJsonObject(name=name, object={"raw": arguments}, tool_call_id=tool_call_id)
+
+        # Handle content parsing (for vLLM and others that don't use tool_calls)
         elif content is not None:
-            if self.completion_kwargs:
-                name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
-            else:
-                name = None
-            parsed_json = self._parse_json_string(content)
-            if parsed_json:
-                json_object = GeneratedJsonObject(
-                    name="parsed_content" if name is None else name,
-                    object=parsed_json
-                )
-                content = None
+            logger.info("No explicit tool_calls, trying content parsing")
+            import re
+            # Try lowercase format
+            tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+            # Try uppercase format
+            tool_call_pattern_upper = r'<TOOL_CALL>\s*(.*?)\s*</TOOL_CALL>'
+            
+            # Log what we're looking for
+            logger.info(f"Checking for tool call tags in content. Contains lowercase: {'<tool_call>' in content}, uppercase: {'<TOOL_CALL>' in content}")
+            
+            if '<tool_call>' in content or '<TOOL_CALL>' in content:
+                # Try lowercase first
+                match = re.search(tool_call_pattern, content, re.DOTALL)
+                if not match:
+                    logger.info("Lowercase pattern not found, trying uppercase")
+                    # Try uppercase if lowercase didn't match
+                    match = re.search(tool_call_pattern_upper, content, re.DOTALL)
+                
+                if match:
+                    logger.info("Found tool call match, attempting to parse JSON")
+                    try:
+                        tool_data = json.loads(match.group(1).strip())
+                        logger.info(f"Successfully parsed tool data: {tool_data}")
+                        json_object = GeneratedJsonObject(
+                            name=tool_data.get("name", "unknown_tool"),
+                            object=tool_data.get("arguments", {}),
+                            tool_call_id=str(uuid4())
+                        )
+                        content = None
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse tool call JSON: {e}")
+                        logger.debug(f"Raw matched content: {match.group(1).strip()}")
+
+            # If no tool call found, try parsing as regular JSON
+            if json_object is None and content is not None:
+                logger.info("No tool call found/parsed, attempting regular JSON parsing")
+                if self.completion_kwargs:
+                    name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
+                    logger.info(f"Found schema name from completion_kwargs: {name}")
+                else:
+                    name = None
+                
+                parsed_json = self._parse_json_string(content)
+                if parsed_json:
+                    logger.info("Successfully parsed content as regular JSON")
+                    json_object = GeneratedJsonObject(
+                        name="parsed_content" if name is None else name,
+                        object=parsed_json,
+                        tool_call_id=str(uuid4())
+                    )
+                    content = None
+                else:
+                    logger.warning("Failed to parse content as JSON")
 
         # Extract usage information
         if chat_completion.usage:
+            logger.info("Extracting usage information")
             usage = Usage(
                 model=chat_completion.model,
                 prompt_tokens=chat_completion.usage.prompt_tokens,
@@ -1083,8 +1211,8 @@ class RawOutput(Entity):
                 rejected_prediction_tokens=chat_completion.usage.completion_tokens_details.rejected_prediction_tokens if chat_completion.usage.completion_tokens_details else None,
                 cached_tokens=chat_completion.usage.prompt_tokens_details.cached_tokens if chat_completion.usage.prompt_tokens_details else None
             )
-        EntityRegistry._logger.info(f"Parsed OpenAI completion: {json_object.name if json_object else None}, {usage}")
-
+        
+        logger.info(f"Parsing complete. Content: {'Present' if content else 'None'}, JSON object: {'Present' if json_object else 'None'}")
         return content, json_object, usage, None
 
     def _parse_anthropic_message(self, message: AnthropicMessage) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
@@ -1320,7 +1448,7 @@ class ChatThread(Entity):
     @property
     def oai_messages(self) -> List[Dict[str, Any]]:
         """Convert chat history to OpenAI message format."""
-        EntityRegistry._logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
+        logger.info(f"Converting ChatThread({self.id}) history to OpenAI format")
         messages = []
         
         if self.system_prompt and not self.llm_config.reasoner:
@@ -1335,7 +1463,7 @@ class ChatThread(Entity):
             })
         
         for msg in self.history:
-            EntityRegistry._logger.info(f"Processing message: role={msg.role}, "
+            logger.info(f"Processing message: role={msg.role}, "
                                       f"tool_call_id={msg.oai_tool_call_id}")
             
             if msg.role == MessageRole.user:
@@ -1371,7 +1499,7 @@ class ChatThread(Entity):
                     "tool_call_id": msg.oai_tool_call_id
                 })
         
-        EntityRegistry._logger.info(f"Final messages for ChatThread({self.id}): {messages}")
+        logger.info(f"Final messages for ChatThread({self.id}): {messages}")
         return messages
 
     @property
@@ -1398,17 +1526,17 @@ class ChatThread(Entity):
     @entity_tracer
     def add_user_message(self) -> Optional[ChatMessage]:
         """Add a user message to history."""
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_user_message")
+        logger.debug(f"ChatThread({self.id}): Starting add_user_message")
         
         if not self.new_message and self.llm_config.response_format not in [ResponseFormat.auto_tools, ResponseFormat.workflow]:
-            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add user message - no new message content")
+            logger.error(f"ChatThread({self.id}): Cannot add user message - no new message content")
             raise ValueError("Cannot add user message - no new message content")
         elif not self.new_message:
-            EntityRegistry._logger.info(f"ChatThread({self.id}): Skipping user message - in {self.llm_config.response_format} mode")
+            logger.info(f"ChatThread({self.id}): Skipping user message - in {self.llm_config.response_format} mode")
             return None
 
         parent_id = self.history[-1].id if self.history else None
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating user message with parent_id: {parent_id}")
+        logger.debug(f"ChatThread({self.id}): Creating user message with parent_id: {parent_id}")
 
         user_message = ChatMessage(
             role=MessageRole.user,
@@ -1417,14 +1545,14 @@ class ChatThread(Entity):
             parent_message_uuid=parent_id
         )
         
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Created user message({user_message.id})")
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Message content: {self.new_message[:100]}...")
+        logger.info(f"ChatThread({self.id}): Created user message({user_message.id})")
+        logger.debug(f"ChatThread({self.id}): Message content: {self.new_message[:100]}...")
         
         self.history.append(user_message)
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Added user message to history. New history length: {len(self.history)}")
+        logger.info(f"ChatThread({self.id}): Added user message to history. New history length: {len(self.history)}")
         
         self.new_message = None
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Cleared new_message buffer")
+        logger.debug(f"ChatThread({self.id}): Cleared new_message buffer")
         
         return user_message
     
@@ -1432,24 +1560,24 @@ class ChatThread(Entity):
     def reset_workflow_step(self):
         """Reset the workflow step to 0"""
         self.workflow_step = 0
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Reset workflow step to 0")
+        logger.info(f"ChatThread({self.id}): Reset workflow step to 0")
 
     @entity_tracer
     async def add_chat_turn_history(self, output: ProcessedOutput) -> Tuple[ChatMessage, ChatMessage]:
         """Add a chat turn to history, including any tool executions or validations."""
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
+        logger.debug(f"ChatThread({self.id}): Starting add_chat_turn_history with ProcessedOutput({output.id})")
         
         # Get the parent message
         
         if not self.history:
-            EntityRegistry._logger.error(f"ChatThread({self.id}): Cannot add chat turn to empty history")
+            logger.error(f"ChatThread({self.id}): Cannot add chat turn to empty history")
             raise ValueError("Cannot add chat turn to empty history")
         
         parent_message = self.history[-1]
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Parent message({parent_message.id}) role: {parent_message.role}")
+        logger.debug(f"ChatThread({self.id}): Parent message({parent_message.id}) role: {parent_message.role}")
         
         # Create assistant message
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Creating assistant message")
+        logger.debug(f"ChatThread({self.id}): Creating assistant message")
         assistant_message = ChatMessage(
             role=MessageRole.assistant,
             content=output.content or "",
@@ -1465,17 +1593,17 @@ class ChatThread(Entity):
         )
         
         self.history.append(assistant_message)
-        EntityRegistry._logger.info(f"ChatThread({self.id}): Added assistant message({assistant_message.id})")
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Assistant message details - tool_name: {assistant_message.tool_name}, tool_call_id: {assistant_message.oai_tool_call_id}")
+        logger.info(f"ChatThread({self.id}): Added assistant message({assistant_message.id})")
+        logger.debug(f"ChatThread({self.id}): Assistant message details - tool_name: {assistant_message.tool_name}, tool_call_id: {assistant_message.oai_tool_call_id}")
         
         # Handle tool execution/validation
         if output.json_object and assistant_message:
             tool = self.get_tool_by_name(output.json_object.name)
             if tool:
-                EntityRegistry._logger.info(f"ChatThread({self.id}): Processing tool {tool.name} ({type(tool).__name__})")
+                logger.info(f"ChatThread({self.id}): Processing tool {tool.name} ({type(tool).__name__})")
                 try:
                     if isinstance(tool, StructuredTool):
-                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Validating structured tool input")
+                        logger.debug(f"ChatThread({self.id}): Validating structured tool input")
                         validation_result = tool.execute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
@@ -1488,10 +1616,10 @@ class ChatThread(Entity):
                             parent_message_uuid=assistant_message.id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        EntityRegistry._logger.info(f"ChatThread({self.id}): Validation successful")
+                        logger.info(f"ChatThread({self.id}): Validation successful")
                     
                     elif isinstance(tool, CallableTool):
-                        EntityRegistry._logger.debug(f"ChatThread({self.id}): Executing callable tool")
+                        logger.debug(f"ChatThread({self.id}): Executing callable tool")
                         tool_result = await tool.aexecute(input_data=output.json_object.object)
                         tool_message = ChatMessage(
                             role=MessageRole.tool,
@@ -1503,18 +1631,18 @@ class ChatThread(Entity):
                             parent_message_uuid=assistant_message.id,
                             oai_tool_call_id=assistant_message.oai_tool_call_id
                         )
-                        EntityRegistry._logger.info(f"ChatThread({self.id}): Tool execution successful")
+                        logger.info(f"ChatThread({self.id}): Tool execution successful")
                     
 
                     
                     self.history.append(tool_message)
-                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
-                    EntityRegistry._logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
+                    logger.info(f"ChatThread({self.id}): Added tool message({tool_message.id})")
+                    logger.debug(f"ChatThread({self.id}): Tool message details - type: {tool_message.tool_type}, call_id: {tool_message.oai_tool_call_id}")
                     if self.workflow_step is not None and self.llm_config.response_format == ResponseFormat.workflow:
                         "not checking if the excuted tool is the tool that was supposed to be executed - no idea how could this be tesxted"
                         self.workflow_step += 1
                 except Exception as e:
-                    EntityRegistry._logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
+                    logger.error(f"ChatThread({self.id}): Tool operation failed: {str(e)}")
                     error_message = ChatMessage(
                         role=MessageRole.tool,
                         content=json.dumps({"error": str(e)}),
@@ -1526,9 +1654,9 @@ class ChatThread(Entity):
                         oai_tool_call_id=assistant_message.oai_tool_call_id
                     )
                     self.history.append(error_message)
-                    EntityRegistry._logger.info(f"ChatThread({self.id}): Added error message({error_message.id})")
+                    logger.info(f"ChatThread({self.id}): Added error message({error_message.id})")
         
-        EntityRegistry._logger.debug(f"ChatThread({self.id}): Completed add_chat_turn_history")
+        logger.debug(f"ChatThread({self.id}): Completed add_chat_turn_history")
         return parent_message, assistant_message
     
     def get_tools_for_llm(self) -> Optional[List[Union[ChatCompletionToolParam, ToolParam]]]:
