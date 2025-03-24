@@ -168,3 +168,5 @@ minference/.DS_Store
 /bestiary_files
 all_monsters.json
 /examples/bestiary_files
+.DS_Store
+/data

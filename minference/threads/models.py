@@ -988,24 +988,24 @@ class RawOutput(Entity):
             if provider == LLMClient.openrouter:
                 try:
                     result = DeepSeekChatCompletion.model_validate(self.raw_result)
-                    self.parsed_result = self._parse_oai_completion(result)
+                    self.parsed_result = self.parse_oai_completion(result)
                 except:
                     # Fall back to standard OpenAI format
                     result = ChatCompletion.model_validate(self.raw_result)
-                    self.parsed_result = self._parse_oai_completion(result)
+                    self.parsed_result = self.parse_oai_completion(result)
             # Handle other providers as before
             elif provider == LLMClient.openai:
-                self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+                self.parsed_result = self.parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             elif provider == LLMClient.anthropic:
-                self.parsed_result = self._parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
+                self.parsed_result = self.parse_anthropic_message(AnthropicMessage.model_validate(self.raw_result))
             elif provider in [LLMClient.vllm, LLMClient.litellm]:
-                self.parsed_result = self._parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
+                self.parsed_result = self.parse_oai_completion(ChatCompletion.model_validate(self.raw_result))
             else:
                 raise ValueError(f"Unsupported result provider: {provider}")
         except Exception as e:
             self.parsed_result = (None, None, None, str(e))
             
-        return self.parsed_result
+        return self.parsed_result if self.parsed_result is not None else (None, None, None, None)
 
     @computed_field
     @property
@@ -1070,7 +1070,6 @@ class RawOutput(Entity):
 
             # Try Python-style boolean conversion
             try:
-                # Replace Python-style booleans with JSON-style booleans
                 cleaned_content = re.sub(r'\bTrue\b', 'true', cleaned_content)
                 cleaned_content = re.sub(r'\bFalse\b', 'false', cleaned_content)
                 cleaned_content = re.sub(r'\bNone\b', 'null', cleaned_content)
@@ -1084,138 +1083,278 @@ class RawOutput(Entity):
             logger.error(f"Error parsing JSON string: {str(e)}")
             return None
 
-    def _parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
+    def parse_oai_completion(self, chat_completion: Union[ChatCompletion, DeepSeekChatCompletion]) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
         """Parse OpenAI or DeepSeek completion format."""
-        logger.info("Starting _parse_oai_completion")
-        choice = chat_completion.choices[0]
-        message = choice.message
+        logger.info("Starting parse_oai_completion")
         
+        # Extract the choice and message
+        try:
+            choice = chat_completion.choices[0]
+            message = choice.message
+        except (AttributeError, IndexError) as e:
+            logger.error(f"Failed to extract message from completion: {e}")
+            return None, None, None, None
+        
+        # Handle DeepSeek specific formatting
         if isinstance(chat_completion, DeepSeekChatCompletion) and isinstance(message, DeepSeekChatCompletionMessage):
             content = f"<think>{message.reasoning}</think>\n{message.content}" if message.reasoning else message.content
         else:
             content = message.content
         
-        if content is not None:
+        # Log initial content (if present)
+        if content:
             logger.info(f"Initial content: {content[:200]}...")
         else:
-            logger.info("Initial content is None")
-
+            logger.info("Content is None or empty")
+        
         json_object = None
         usage = None
-
-        # Handle explicit tool calls (OpenAI format)
-        if message.tool_calls:
-            logger.info("Found explicit tool_calls in message")
-            tool_call = message.tool_calls[0]
-            name = tool_call.function.name
-            tool_call_id = tool_call.id
+        
+        # Part 1: Handle explicit tool calls (OpenAI format)
+        if hasattr(message, 'tool_calls') and message.tool_calls:
+            json_object = self._parse_explicit_tool_calls(message.tool_calls)
+        
+        # Part 2: Handle content-based tool calls (for vLLM and others)
+        elif content:
+            json_object = self._parse_content_tool_calls(content)
             
-            # Check if arguments contain a nested tool_call
-            arguments = tool_call.function.arguments
-            logger.info(f"Raw tool call arguments: {arguments[:200]}...")
-            
-            if '<tool_call>' in arguments:
-                logger.info("Found nested tool_call in arguments, attempting to extract")
-                import re
-                tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
-                match = re.search(tool_call_pattern, arguments, re.DOTALL)
-                if match:
-                    try:
-                        tool_data = json.loads(match.group(1).strip())
-                        logger.info(f"Successfully parsed nested tool data: {tool_data}")
-                        json_object = GeneratedJsonObject(
-                            name=tool_data.get("name", name),
-                            object=tool_data.get("arguments", {}),
-                            tool_call_id=tool_call_id
-                        )
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse nested tool call JSON: {e}")
-            
-            # If nested parsing failed, try direct parsing
-            if json_object is None:
-                try:
-                    object_dict = json.loads(arguments)
-                    json_object = GeneratedJsonObject(name=name, object=object_dict, tool_call_id=tool_call_id)
-                    logger.info(f"Successfully parsed direct tool call for tool: {name}")
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse tool call arguments: {e}")
-                    json_object = GeneratedJsonObject(name=name, object={"raw": arguments}, tool_call_id=tool_call_id)
-
-        # Handle content parsing (for vLLM and others that don't use tool_calls)
-        elif content is not None:
-            logger.info("No explicit tool_calls, trying content parsing")
-            import re
-            # Try lowercase format
-            tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
-            # Try uppercase format
-            tool_call_pattern_upper = r'<TOOL_CALL>\s*(.*?)\s*</TOOL_CALL>'
-            
-            # Log what we're looking for
-            logger.info(f"Checking for tool call tags in content. Contains lowercase: {'<tool_call>' in content}, uppercase: {'<TOOL_CALL>' in content}")
-            
-            if '<tool_call>' in content or '<TOOL_CALL>' in content:
-                # Try lowercase first
-                match = re.search(tool_call_pattern, content, re.DOTALL)
-                if not match:
-                    logger.info("Lowercase pattern not found, trying uppercase")
-                    # Try uppercase if lowercase didn't match
-                    match = re.search(tool_call_pattern_upper, content, re.DOTALL)
-                
-                if match:
-                    logger.info("Found tool call match, attempting to parse JSON")
-                    try:
-                        tool_data = json.loads(match.group(1).strip())
-                        logger.info(f"Successfully parsed tool data: {tool_data}")
-                        json_object = GeneratedJsonObject(
-                            name=tool_data.get("name", "unknown_tool"),
-                            object=tool_data.get("arguments", {}),
-                            tool_call_id=str(uuid4())
-                        )
-                        content = None
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse tool call JSON: {e}")
-                        logger.debug(f"Raw matched content: {match.group(1).strip()}")
-
-            # If no tool call found, try parsing as regular JSON
-            if json_object is None and content is not None:
-                logger.info("No tool call found/parsed, attempting regular JSON parsing")
-                if self.completion_kwargs:
-                    name = self.completion_kwargs.get("response_format", {}).get("json_schema", {}).get("name", None)
-                    logger.info(f"Found schema name from completion_kwargs: {name}")
-                else:
-                    name = None
-                
-                parsed_json = self._parse_json_string(content)
-                if parsed_json:
-                    logger.info("Successfully parsed content as regular JSON")
-                    json_object = GeneratedJsonObject(
-                        name="parsed_content" if name is None else name,
-                        object=parsed_json,
-                        tool_call_id=str(uuid4())
-                    )
-                    content = None
-                else:
-                    logger.warning("Failed to parse content as JSON")
-
-        # Extract usage information
-        if chat_completion.usage:
-            logger.info("Extracting usage information")
-            usage = Usage(
-                model=chat_completion.model,
-                prompt_tokens=chat_completion.usage.prompt_tokens,
-                completion_tokens=chat_completion.usage.completion_tokens,
-                total_tokens=chat_completion.usage.total_tokens,
-                accepted_prediction_tokens=chat_completion.usage.completion_tokens_details.accepted_prediction_tokens if chat_completion.usage.completion_tokens_details else None,
-                audio_tokens=chat_completion.usage.completion_tokens_details.audio_tokens if chat_completion.usage.completion_tokens_details else None,
-                reasoning_tokens=chat_completion.usage.completion_tokens_details.reasoning_tokens if chat_completion.usage.completion_tokens_details else None,
-                rejected_prediction_tokens=chat_completion.usage.completion_tokens_details.rejected_prediction_tokens if chat_completion.usage.completion_tokens_details else None,
-                cached_tokens=chat_completion.usage.prompt_tokens_details.cached_tokens if chat_completion.usage.prompt_tokens_details else None
-            )
+            # If a tool call was found in the content, set content to None
+            if json_object:
+                content = None
+        
+        # Part 3: Extract usage information
+        if hasattr(chat_completion, 'usage'):
+            usage = self._extract_usage_info(chat_completion)
         
         logger.info(f"Parsing complete. Content: {'Present' if content else 'None'}, JSON object: {'Present' if json_object else 'None'}")
         return content, json_object, usage, None
 
-    def _parse_anthropic_message(self, message: AnthropicMessage) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], None]:
+    def _parse_explicit_tool_calls(self, tool_calls) -> Optional[GeneratedJsonObject]:
+        """Parse explicit tool calls from OpenAI format."""
+        if not tool_calls or not isinstance(tool_calls, list) or len(tool_calls) == 0:
+            return None
+        
+        # Process the first tool call
+        tool_call = tool_calls[0]
+        
+        try:
+            # Extract name and ID
+            name = tool_call.function.name
+            tool_call_id = tool_call.id
+            arguments = tool_call.function.arguments
+            
+            logger.info(f"Processing tool call: {name} (ID: {tool_call_id})")
+            logger.debug(f"Raw arguments: {arguments[:200]}...")
+            
+            # First try to clean any XML-style tool call wrapping
+            cleaned_arguments = arguments
+            if '<tool_call>' in arguments:
+                import re
+                match = re.search(r'<tool_call>\s*(.*?)\s*</tool_call>', arguments, re.DOTALL)
+                if match:
+                    cleaned_arguments = match.group(1).strip()
+                    logger.info("Stripped XML tool_call tags from arguments")
+            
+            # Try parsing the cleaned arguments
+            try:
+                object_dict = json.loads(cleaned_arguments)
+                logger.info(f"Successfully parsed cleaned tool arguments for {name}")
+                
+                # If this was wrapped in tool_call tags, check if it has name/arguments structure
+                if '<tool_call>' in arguments and 'name' in object_dict and 'arguments' in object_dict:
+                    return GeneratedJsonObject(
+                        name=object_dict["name"],
+                        object=object_dict["arguments"],
+                        tool_call_id=tool_call_id
+                    )
+                
+                return GeneratedJsonObject(
+                    name=name, 
+                    object=object_dict,
+                    tool_call_id=tool_call_id
+                )
+                
+            except json.JSONDecodeError as e:
+                # If JSON parsing fails, try to clean up Python style booleans
+                logger.debug(f"Initial JSON parsing failed: {e}, trying with boolean conversion")
+                try:
+                    # Replace Python-style booleans with JSON-style booleans
+                    cleaned_args = re.sub(r'\bTrue\b', 'true', cleaned_arguments)
+                    cleaned_args = re.sub(r'\bFalse\b', 'false', cleaned_args)
+                    cleaned_args = re.sub(r'\bNone\b', 'null', cleaned_args)
+                    
+                    object_dict = json.loads(cleaned_args)
+                    logger.info(f"Successfully parsed cleaned tool arguments with boolean conversion for {name}")
+                    
+                    # Check again for nested structure after boolean conversion
+                    if '<tool_call>' in arguments and 'name' in object_dict and 'arguments' in object_dict:
+                        return GeneratedJsonObject(
+                            name=object_dict["name"],
+                            object=object_dict["arguments"],
+                            tool_call_id=tool_call_id
+                        )
+                    
+                    return GeneratedJsonObject(
+                        name=name, 
+                        object=object_dict,
+                        tool_call_id=tool_call_id
+                    )
+                    
+                except json.JSONDecodeError:
+                    # If all parsing attempts fail, log the error
+                    logger.error(f"Failed to parse tool arguments as JSON after all attempts")
+                    return None
+        
+        except Exception as e:
+            logger.error(f"Error processing tool call: {e}")
+            return None
+
+    def _parse_content_tool_calls(self, content: str) -> Optional[GeneratedJsonObject]:
+        """Parse tool calls from content for providers that don't use explicit tool_calls."""
+        import re
+        
+        # Define patterns for tool calls in content
+        patterns = [
+            r'<tool_call>\s*(.*?)\s*</tool_call>',        # Lowercase pattern
+            r'<TOOL_CALL>\s*(.*?)\s*</TOOL_CALL>',        # Uppercase pattern
+            r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]', # Alternative format
+            r'<tool_use>(.*?)</tool_use>'                 # Anthropic-style pattern
+        ]
+        
+        # Check if content contains any tool call patterns
+        has_pattern = False
+        for pattern in patterns:
+            tag = pattern.split(r'\s*')[0][1:]
+            has_pattern = tag in content
+            if has_pattern:
+                break
+                
+        logger.info(f"Content contains tool call pattern: {has_pattern}")
+        
+        if has_pattern:
+            # Try each pattern
+            for pattern in patterns:
+                match = re.search(pattern, content, re.DOTALL)
+                if match:
+                    logger.info(f"Found match with pattern: {pattern}")
+                    
+                    try:
+                        # Parse the tool call JSON
+                        tool_data = json.loads(match.group(1).strip())
+                        logger.info(f"Successfully parsed tool call data from content")
+                        
+                        # Determine name and arguments
+                        name = tool_data.get("name")
+                        arguments = tool_data.get("arguments")
+                        
+                        # Handle different JSON structures
+                        if name and arguments:
+                            # Standard format: {"name": "tool_name", "arguments": {...}}
+                            return GeneratedJsonObject(
+                                name=name,
+                                object=arguments,
+                                tool_call_id=str(uuid4())
+                            )
+                        elif "function" in tool_data:
+                            # OpenAI-like format: {"function": {"name": "tool_name", "arguments": {...}}}
+                            func = tool_data["function"]
+                            return GeneratedJsonObject(
+                                name=func.get("name", "unknown_tool"),
+                                object=json.loads(func.get("arguments", "{}")),
+                                tool_call_id=str(uuid4())
+                            )
+                        else:
+                            # Fallback: assume the whole object is the arguments
+                            logger.warning("Unclear tool call structure, using default mapping")
+                            return GeneratedJsonObject(
+                                name="unknown_tool",
+                                object=tool_data,
+                                tool_call_id=str(uuid4())
+                            )
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse tool call JSON from content: {e}")
+                        logger.debug(f"Raw matched content: {match.group(1).strip()}")
+        
+        # If no tool call found, try parsing content as regular JSON
+        logger.info("No tool call pattern match, trying regular JSON parsing")
+        
+        # Get schema name if available
+        name = None
+        if hasattr(self, 'completion_kwargs') and self.completion_kwargs:
+            try:
+                response_format = self.completion_kwargs.get("response_format", {})
+                if response_format and isinstance(response_format, dict):
+                    json_schema = response_format.get("json_schema", {})
+                    if json_schema and isinstance(json_schema, dict):
+                        name = json_schema.get("name")
+                        if name:
+                            logger.info(f"Found schema name from completion_kwargs: {name}")
+            except Exception as e:
+                logger.warning(f"Error extracting schema name: {e}")
+        
+        # Try to parse content as JSON
+        parsed_json = self._parse_json_string(content)
+        if parsed_json:
+            logger.info("Successfully parsed content as regular JSON")
+            return GeneratedJsonObject(
+                name="parsed_content" if name is None else name,
+                object=parsed_json,
+                tool_call_id=str(uuid4())
+            )
+        
+        # If all parsing attempts fail, return None
+        return None
+
+    def _extract_usage_info(self, chat_completion) -> Optional[Usage]:
+        """Extract usage information from the completion."""
+        try:
+            usage_data = chat_completion.usage
+            
+            # Basic fields that should always be present
+            usage_kwargs = {
+                "model": getattr(chat_completion, "model", "unknown"),
+                "prompt_tokens": usage_data.prompt_tokens,
+                "completion_tokens": usage_data.completion_tokens,
+                "total_tokens": usage_data.total_tokens
+            }
+            
+            # Handle optional nested fields
+            completion_tokens_details = getattr(usage_data, 'completion_tokens_details', None)
+            prompt_tokens_details = getattr(usage_data, 'prompt_tokens_details', None)
+            
+            # Add optional fields if they exist
+            optional_fields = {
+                "accepted_prediction_tokens": None,
+                "audio_tokens": None,
+                "reasoning_tokens": None,
+                "rejected_prediction_tokens": None,
+                "cached_tokens": None
+            }
+            
+            # Check completion_tokens_details
+            if completion_tokens_details:
+                optional_fields["accepted_prediction_tokens"] = getattr(completion_tokens_details, 'accepted_prediction_tokens', None)
+                optional_fields["audio_tokens"] = getattr(completion_tokens_details, 'audio_tokens', None)
+                optional_fields["reasoning_tokens"] = getattr(completion_tokens_details, 'reasoning_tokens', None)
+                optional_fields["rejected_prediction_tokens"] = getattr(completion_tokens_details, 'rejected_prediction_tokens', None)
+            
+            # Check prompt_tokens_details
+            if prompt_tokens_details:
+                optional_fields["cached_tokens"] = getattr(prompt_tokens_details, 'cached_tokens', None)
+            
+            # Add non-None optional fields to kwargs
+            for key, value in optional_fields.items():
+                if value is not None:
+                    usage_kwargs[key] = value
+            
+            return Usage(**usage_kwargs)
+            
+        except Exception as e:
+            logger.warning(f"Error extracting usage information: {e}")
+            return None
+
+    def parse_anthropic_message(self, message: AnthropicMessage) -> Tuple[Optional[str], Optional[GeneratedJsonObject], Optional[Usage], Optional[str]]:
         """Parse Anthropic message format."""
         content = None
         json_object = None
@@ -1223,9 +1362,9 @@ class RawOutput(Entity):
 
         if message.content:
             text_block = next((block for block in message.content 
-                          if isinstance(block, TextBlock) and block.text.strip()), None)
+                        if isinstance(block, TextBlock) and block.text.strip()), None)
             tool_block = next((block for block in message.content 
-                          if isinstance(block, ToolUseBlock)), None)
+                        if isinstance(block, ToolUseBlock)), None)
             # Check if it's a TextBlock
             if isinstance(text_block, TextBlock):
                 content = text_block.text
@@ -1239,7 +1378,7 @@ class RawOutput(Entity):
                     content = content
             # Check if it's a ToolUseBlock
             if isinstance(tool_block, ToolUseBlock):
-               
+            
                 tool_call_id = tool_block.id
                 # Cast tool_use.input to Dict[str, Any]
                 if isinstance(tool_block.input, dict):
@@ -1280,7 +1419,7 @@ class RawOutput(Entity):
             raise ValueError("Chat thread ID is required to create a ProcessedOutput")
         if self.chat_thread_live_id is None:
             raise ValueError("Chat thread live ID is required to create a ProcessedOutput")
-   
+    
         return ProcessedOutput(
             content=content,
             json_object=json_object,

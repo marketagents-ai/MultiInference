@@ -65,7 +65,7 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1000)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
     litellm_chats = create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.tool],5)+create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.text],5)
     anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.tool],5)+create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.text],5)
     
@@ -75,7 +75,8 @@ async def main():
     print("Running parallel completions...")
     all_chats = openai_chats+ litellm_chats+anthropic_chats
     all_chats = openai_chats
-    all_chats = [litellm_chats[0]]
+    # all_chats = [litellm_chats[0]]
+    # all_chats = 
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
@@ -102,5 +103,5 @@ if __name__ == "__main__":
     all_chats = asyncio.run(main())
     print(all_chats[0].history)
     #print mermaid graph of first chat
-    # print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
+    print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
 
