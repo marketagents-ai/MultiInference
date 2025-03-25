@@ -1,11 +1,15 @@
 import asyncio
 from dotenv import load_dotenv
-from minference.lite.inference import InferenceOrchestrator, RequestLimits
-from minference.lite.models import ChatThread, LLMConfig, CallableTool, LLMClient, ResponseFormat, SystemPrompt, StructuredTool, ChatMessage
-from typing import List
+from minference.threads.inference import InferenceOrchestrator, RequestLimits
+from minference.threads.models import ChatMessage, ChatThread, LLMConfig, CallableTool, LLMClient,ResponseFormat, SystemPrompt, StructuredTool, Usage
+from typing import Literal, List
+from minference.ecs.caregistry import CallableRegistry
+import time
+from minference.clients.utils import msg_dict_to_oai, msg_dict_to_anthropic, parse_json_string
+from minference.ecs.entity import EntityRegistry
+import os
+import logging
 from pydantic import BaseModel
-from minference.entity import EntityRegistry
-from minference.caregistry import CallableRegistry
 import statistics
 
 
@@ -192,40 +196,53 @@ async def main():
         ),
         tools=tools
     )
-    # chat2  = ChatThread(
-    #     system_prompt=system_prompt,
-    #     new_message=f"Using the numbers {example_numbers}, please filter out numbers above 20, then sort the remaining numbers in ascending order, and calculate their statistics.",
-    #     llm_config=LLMConfig(
-    #         client=LLMClient.openai,
-    #         model="gpt-4",
 
-
-    #         response_format=ResponseFormat.auto_tools,
-    #         max_tokens=500
-    #     ),
-    #     tools=tools
-    # )
     all_chats = [oai_chat, litellm_chat, anthropic_chat]
     all_chats = [oai_chat]
     print("Starting sequential tool inference...")
     await run_parallel_chats(orchestrator, all_chats)
 
+import subprocess
+import tempfile
+import os
 
+def mermaid_to_image(mermaid_str, output_path):
+    """
+    Convert a Mermaid string to an image using mermaid-cli.
+
+    :param mermaid_str: The Mermaid diagram text (string)
+    :param output_path: Path (with extension .png or .svg) to write the resulting image
+    """
+    # Create a temporary file for the Mermaid code
+    with tempfile.NamedTemporaryFile(suffix=".mmd", delete=False) as tmp:
+        tmp.write(mermaid_str.encode("utf-8"))
+        tmp_name = tmp.name
+
+    # Run mermaid-cli to convert the .mmd file to an image
+    subprocess.run([
+        "mmdc",
+        "-i", tmp_name,
+        "-o", output_path
+    ], check=True)
+
+    # Clean up the temporary .mmd file
+    os.remove(tmp_name)
 
 
     # await run_sequential_steps(orchestrator, chat2, user_feedback=True)
         
-    # Print final chat history
-    print("\nFinal Chat History No user feedback:")
-    # print(chat.history)
-    # print("\nFinal Chat History With user feedback:")
-    # print(chat2.history)
-
+  
 
 if __name__ == "__main__":
     asyncio.run(main())
     print(EntityRegistry.list_by_type(ChatMessage))
     threads = EntityRegistry.list_by_type(ChatThread)
-    print(EntityRegistry.get_lineage_mermaid(threads[0].lineage_id))
+    mermaid_str = EntityRegistry.get_lineage_mermaid(threads[0].lineage_id)
+    #strip the mermaid declaration
+    print(mermaid_str)
+    mermaid_str = mermaid_str.split("```mermaid")[1]
+    mermaid_str = mermaid_str.split("```")[0]
+    
+    mermaid_to_image(mermaid_str, "chat_thread_auto_tools_diff.png")
 
 

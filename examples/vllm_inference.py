@@ -58,7 +58,7 @@ vllm_image = vllm_image.env({"VLLM_USE_V1": "1"})
 # [here](https://neuralmagic.com/blog/introducing-machete-a-mixed-input-gemm-kernel-optimized-for-nvidia-hopper-gpus/).
 
 MODELS_DIR = "/llamas"
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-32B-Instruct"
 MODEL_REVISION = "a7c09948d9a632c2c840722f519672cd94af885d"
 
 # Although vLLM will download weights on-demand, we want to cache them if possible. We'll use [Modal Volumes](https://modal.com/docs/guide/volumes),
@@ -78,9 +78,9 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
 # We wrap it in the [`@modal.web_server` decorator](https://modal.com/docs/guide/webhooks#non-asgi-web-servers)
 # to connect it to the Internet.
 
-app = modal.App("example-vllm-openai-compatible")
+app = modal.App("qwen32-vllm-openai-compatible")
 
-N_GPU = 8  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
+N_GPU = 2  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
 API_KEY = "super-secret-key"  # api key, for auth. for production use, replace with a modal.Secret
 
 MINUTES = 60  # seconds
@@ -92,7 +92,7 @@ VLLM_PORT = 8000
     image=vllm_image,
     gpu=f"H100:{N_GPU}",
     # how many requests can one replica handle? tune carefully!
-    allow_concurrent_inputs=100,
+    allow_concurrent_inputs=1000,
     # how long should we stay up with no requests?
     container_idle_timeout=15 * MINUTES,
     volumes={
@@ -100,7 +100,7 @@ VLLM_PORT = 8000
         "/root/.cache/vllm": vllm_cache_vol,
     },
 )
-@modal.web_server(port=VLLM_PORT, startup_timeout=5 * MINUTES)
+@modal.web_server(port=VLLM_PORT, startup_timeout=15 * MINUTES)
 def serve():
     import subprocess
 
@@ -109,7 +109,11 @@ def serve():
         "serve",
         "--uvicorn-log-level=info",
         MODEL_NAME,
-       
+        # "--tool-call-parser hermes",
+        # "--enable-auto-tool-choice",
+        "--tensor_parallel_size",
+        str(N_GPU),
+
         "--host",
         "0.0.0.0",
         "--port",
