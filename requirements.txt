@@ -23,3 +23,5 @@ aiohttp
 polars
 jsonschema
 ipykernel
+aiofiles
+datasets

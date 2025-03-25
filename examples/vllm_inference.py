@@ -100,7 +100,7 @@ VLLM_PORT = 8000
         "/root/.cache/vllm": vllm_cache_vol,
     },
 )
-@modal.web_server(port=VLLM_PORT, startup_timeout=5 * MINUTES)
+@modal.web_server(port=VLLM_PORT, startup_timeout=15 * MINUTES)
 def serve():
     import subprocess
 
