@@ -170,3 +170,5 @@ all_monsters.json
 /examples/bestiary_files
 .DS_Store
 /data
+diagram.mmd
+diagram.png
