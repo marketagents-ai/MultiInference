@@ -65,7 +65,7 @@ async def main():
 
     # OpenAI chats
     # openai_chats = create_chats("openai", "gpt-4o-mini",[ResponseFormat.text,ResponseFormat.json_beg,ResponseFormat.json_object,ResponseFormat.structured_output,ResponseFormat.tool],1)
-    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1000)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
+    openai_chats = create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.tool],1)#+create_chats(LLMClient.openai, "gpt-4o-mini",[ResponseFormat.text],1)
     litellm_chats = create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.tool],5)+create_chats(LLMClient.litellm, lite_llm_model,[ResponseFormat.text],5)
     anthropic_chats = create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.tool],5)+create_chats(LLMClient.anthropic, anthropic_model,[ResponseFormat.text],5)
     
@@ -75,7 +75,8 @@ async def main():
     print("Running parallel completions...")
     all_chats = openai_chats+ litellm_chats+anthropic_chats
     all_chats = openai_chats
-    all_chats = [litellm_chats[0]]
+    # all_chats = [litellm_chats[0]]
+    # all_chats = 
     start_time = time.time()
     # with Session(engine) as session:
     completion_results = await orchestrator.run_parallel_ai_completion(all_chats)
@@ -97,10 +98,41 @@ async def main():
     total_calls = 0
     return openai_chats
 
+import subprocess
+import tempfile
+import os
+
+def mermaid_to_image(mermaid_str, output_path):
+    """
+    Convert a Mermaid string to an image using mermaid-cli.
+
+    :param mermaid_str: The Mermaid diagram text (string)
+    :param output_path: Path (with extension .png or .svg) to write the resulting image
+    """
+    # Create a temporary file for the Mermaid code
+    with tempfile.NamedTemporaryFile(suffix=".mmd", delete=False) as tmp:
+        tmp.write(mermaid_str.encode("utf-8"))
+        tmp_name = tmp.name
+
+    # Run mermaid-cli to convert the .mmd file to an image
+    subprocess.run([
+        "mmdc",
+        "-i", tmp_name,
+        "-o", output_path
+    ], check=True)
+
+    # Clean up the temporary .mmd file
+    os.remove(tmp_name)
 
 if __name__ == "__main__":
     all_chats = asyncio.run(main())
     print(all_chats[0].history)
     #print mermaid graph of first chat
-    # print(EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id))
+    mermaid_str = EntityRegistry.get_lineage_mermaid(all_chats[0].lineage_id)
+    print(mermaid_str)
+    #strip the mermaid declaration
+    mermaid_str = mermaid_str.split("```mermaid")[1]
+    mermaid_str = mermaid_str.split("```")[0]
+    # Write the mermaid code to a file
+    mermaid_to_image(mermaid_str, "chat_thread_diff.png")
 

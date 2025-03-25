@@ -22,35 +22,76 @@ import json
 import re
 import tiktoken
 import ast
+import logging
 
-def parse_json_string(content: str) -> Optional[Dict[str, Any]]:
-    # Remove any leading/trailing whitespace and newlines
-    cleaned_content = content.strip()
-    
-    # Remove markdown code block syntax if present
-    cleaned_content = re.sub(r'^```(?:json)?\s*|\s*```$', '', cleaned_content, flags=re.MULTILINE)
+logger = logging.getLogger(__name__)
+
+def parse_json_string(self, content: str) -> Optional[Dict[str, Any]]:
+    """Parse JSON string safely using multiple parsing strategies."""
+    if not content or not isinstance(content, str):
+        logger.debug("Empty or non-string content provided for JSON parsing")
+        return None
+        
+    import re
+    logger.debug(f"Attempting to parse JSON string (first 100 chars): {content[:100]}...")
     
     try:
-        # First, try to parse as JSON
-        return json.loads(cleaned_content)
-    except json.JSONDecodeError:
-        try:
-            # If JSON parsing fails, try to evaluate as a Python literal
-            return ast.literal_eval(cleaned_content)
-        except (SyntaxError, ValueError):
-            # If both methods fail, try to find and parse a JSON-like structure
-            json_match = re.search(r'(\{[^{}]*\{.*?\}[^{}]*\}|\{.*?\})', cleaned_content, re.DOTALL)
-            if json_match:
-                try:
-                    # Normalize newlines, replace single quotes with double quotes, and unescape quotes
-                    json_str = json_match.group(1).replace('\n', '').replace("'", '"').replace('\\"', '"')
-                    return json.loads(json_str)
-                except json.JSONDecodeError:
-                    pass
-    
-    # If all parsing attempts fail, return None
-    return None
-
+        # Step 1: Extract content from common wrapper patterns
+        extracted_contents = [content]  # Start with original content
+        
+        patterns = [
+            r'<tool_call>\s*(.*?)\s*</tool_call>',
+            r'<TOOL_CALL>\s*(.*?)\s*</TOOL_CALL>',
+            r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]',
+            r'```(?:json)?\s*(.*?)\s*```',
+            r'<tool_use>(.*?)</tool_use>'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, content, re.DOTALL)
+            if match:
+                extracted = match.group(1).strip()
+                logger.debug(f"Extracted content using pattern: {pattern[:20]}...")
+                extracted_contents.append(extracted)
+        
+        # Step 2: Apply various parsing strategies to each content version
+        for c in extracted_contents:
+            # Strategy 1: Direct JSON parsing
+            try:
+                result = json.loads(c)
+                logger.info("Successfully parsed JSON with direct parsing")
+                return result
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 2: Python-style boolean conversion
+            try:
+                cleaned = re.sub(r'\bTrue\b', 'true', c)
+                cleaned = re.sub(r'\bFalse\b', 'false', cleaned)
+                cleaned = re.sub(r'\bNone\b', 'null', cleaned)
+                result = json.loads(cleaned)
+                logger.info("Successfully parsed JSON after boolean conversion")
+                return result
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 3: Extract JSON-like structure
+            try:
+                match = re.search(r'(\{.*\}|\[.*\])', c, re.DOTALL)
+                if match:
+                    result = json.loads(match.group(1))
+                    logger.info("Successfully parsed JSON after extracting JSON-like structure")
+                    return result
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
+        # If all strategies fail
+        logger.warning("All JSON parsing strategies failed")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in parse_json_string: {str(e)}")
+        return None
 def get_ai_context_length(ai_vendor: Literal["openai", "azure_openai", "anthropic"]):
         if ai_vendor == "openai":
             return os.getenv("OPENAI_CONTEXT_LENGTH")
