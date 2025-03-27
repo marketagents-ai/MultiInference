@@ -232,7 +232,8 @@ class InferenceOrchestrator:
                  litellm_request_limits: Optional[RequestLimits] = None,
                  openrouter_request_limits: Optional[RequestLimits] = None,
                  local_cache: bool = True,
-                 cache_folder: Optional[str] = None):
+                 cache_folder: Optional[str] = None,
+                 vllm_endpoint:Optional[str] = None):
         load_dotenv()
         EntityRegistry._logger.info("Initializing InferenceOrchestrator")
         
@@ -240,7 +241,10 @@ class InferenceOrchestrator:
         self.openai_key = os.getenv("OPENAI_KEY", "")
         self.anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.vllm_key = os.getenv("VLLM_API_KEY", "")
-        self.default_vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
+        if vllm_endpoint:
+            self.default_vllm_endpoint = vllm_endpoint
+        else:
+            self.default_vllm_endpoint = os.getenv("VLLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.default_litellm_endpoint = os.getenv("LITELLM_ENDPOINT", "http://localhost:8000/v1/chat/completions")
         self.litellm_key = os.getenv("LITELLM_API_KEY", "")
         self.openrouter_key = os.getenv("OPENROUTER_API_KEY", "")

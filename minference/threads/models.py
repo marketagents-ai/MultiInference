@@ -1519,7 +1519,7 @@ class ChatThread(Entity):
             assert self.forced_output is not None, "Structured output is not set"
             return self.forced_output.get_openai_json_schema_response()
         elif self.llm_config.response_format == ResponseFormat.tool and isinstance(self.forced_output, CallableTool):
-            return 
+            return None
         return None
 
     @property

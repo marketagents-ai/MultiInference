@@ -78,7 +78,7 @@ vllm_cache_vol = modal.Volume.from_name("vllm-cache", create_if_missing=True)
 # We wrap it in the [`@modal.web_server` decorator](https://modal.com/docs/guide/webhooks#non-asgi-web-servers)
 # to connect it to the Internet.
 
-app = modal.App("qwen32-vllm-openai-compatible")
+app = modal.App("qwen32-vllm-optimized-openai-4")
 
 N_GPU = 2  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
 API_KEY = "super-secret-key"  # api key, for auth. for production use, replace with a modal.Secret
@@ -109,8 +109,10 @@ def serve():
         "serve",
         "--uvicorn-log-level=info",
         MODEL_NAME,
-        # "--tool-call-parser hermes",
-        # "--enable-auto-tool-choice",
+        "--enable-prefix-caching",
+        "--guided-decoding-backend",
+        "outlines",
+
         "--tensor_parallel_size",
         str(N_GPU),
 
